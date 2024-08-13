@@ -1,7 +1,7 @@
 import re
 import logging
 from typing import Union
-from database import with_db
+from database import with_db_cursor
 from webscraper import Page, GamePage
 
 TYPE_CHART = (
@@ -40,7 +40,7 @@ def get_game_tids(gid: Union[str, int]):
         logging.warning('Team ids missing') # TODO: provide an alternative to encode with a new team id
     return out
 
-@with_db
+@with_db_cursor
 def fetch_team_data(cursor, tid: Union[str, int]):
     """Fetches team data and populates the database if it does not already exist"""
     tid = str(tid)
@@ -54,7 +54,7 @@ def fetch_team_data(cursor, tid: Union[str, int]):
         res = cursor.fetchone()
     return res
 
-@with_db
+@with_db_cursor
 def parse_plays_to_db(cursor, gid: Union[str, int]):
     """
     Parses plays from a given game and returns them as a list of lists that
