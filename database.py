@@ -1,21 +1,51 @@
 import sqlite3
-from sqlite3 import Error
+import os
+import logging
+from contextlib import contextmanager
 
-DB_FILE = "CBB.sqlite"
+SCHEMA_FILE = 'cbb.sql'     # contains the schema initialization code
+DB_FILE = 'CBB.db'          # database file
+conn = None                 # singular global database connection
 
-# def create_connection():
-#     """Create a database connection to the database."""
-#     conn = None
-#     try:
-#         conn = sqlite3.connect(db_filename)
-#     except Error as e:
-#         print(e)
-#         if conn:
-#             conn.close()
-#     return conn
+def init_schema() -> bool:
+    """Initialize the schema to the appropriate `.db` file."""
+    with (
+        open(SCHEMA_FILE, 'r') as fp, 
+        sqlite3.connect(DB_FILE) as conn 
+    ):
+        if conn is None:
+            logging.warning('connection could not be established')
+            return False
+        cursor = conn.cursor()
+        cursor.executescript(fp.read())
+        conn.commit()
+    return True
 
-def get_connection():
-    """Get connection to the database. Creates the database if it does not exist already."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""CREATE TABLE IF NOT EXISTS""")
+@contextmanager
+def db_connect(path: str):
+    global conn
+    if conn is None:
+        conn = sqlite3.connect(path)
+    try:
+        cursor = conn.cursor()
+        yield cursor
+    except Exception as e:
+        logging.critical('error encountered, rolling back')
+        conn.rollback()
+        raise e
+    else:
+        conn.commit()
+    finally:
+        conn.close()
+
+def with_db_cursor(func, path: str = DB_FILE):
+    def _with_db_cursor(*args, **kwargs):
+        with db_connect(path) as cursor:
+            func(cursor, *args, **kwargs)
+    return _with_db_cursor
+
+
+    
+if __name__ == '__main__':
+    if not os.file.exists(DB_FILE):
+        init_schema()
