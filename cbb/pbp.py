@@ -1,8 +1,9 @@
 import re
 import logging
+import json
 from typing import Union
-from database import with_db_cursor
-from webscraper import Page, GamePage
+from cbb.database import with_db_cursor
+from cbb.webscraper import Page, GamePage
 
 TYPE_CHART = (
     ('SHT', r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+) (made|missed) (Three Point Jumper|Jumper|Layup|Dunk|Free Throw)\.(?: Assisted by ((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\.)?"),
