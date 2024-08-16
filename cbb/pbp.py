@@ -73,6 +73,18 @@ def fetch_rid(cursor, tid: Union[str, int], season: Union[str, int]):
     rid = res[0]
     return rid
 
+@with_cursor
+def fetch_pid_from_roster(cursor, name: str, rid: Union[str, int]):
+    """Fetches pid based on rid"""
+    # TODO: I need to refactor this/the usage thereof so player ids are not added individually
+    # one option is to use ESPN's pid's, which also eliminate key collision on name
+    rid = str(rid)
+    res = cursor.execute('SELECT Players.pid FROM PlayerSeasons JOIN Players ON PlayerSeasons.pid = Players.pid WHERE PlayerSeasons.rid = ?', (rid, )).fetchone()
+    if res is None:
+        # TODO: player does not exist in current roster
+        cursor.execute('INSERT INTO Players ')
+        pass
+
 RE_PLAY_TYPES = (
     ('SHT', r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+) (made|missed) (Three Point Jumper|Jumper|Layup|Dunk|Free Throw)\.(?: Assisted by ((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\.)?"),
     ('REB', r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+) (Offensive|Defensive|Deadball Team) Rebound\."),
