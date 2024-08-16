@@ -230,12 +230,13 @@ def parse_pbp(cursor, gid: Union[str, int]):
                         'date': date
                       })
 
-    # TODO: this section is bootycheeks lmao
     a_tid, h_tid = get_game_tids(gid)
-
-    TeamData = namedtuple('TeamData', ('tid', 'cid', 'name', 'mascot', 'rid'))
-    a_data = TeamData(*fetch_team_data(a_tid), fetch_rid(a_tid, season))
-    h_data = TeamData(*fetch_team_data(h_tid), fetch_rid(h_tid, season))      
+    
+    data_fields = ('tid', 'cid', 'name', 'mascot', 'rid')
+    team_data = {
+        'home': dict(zip(data_fields, (*fetch_team_data(h_tid), fetch_rid(h_tid, season)))),
+        'away': dict(zip(data_fields, (*fetch_team_data(a_tid), fetch_rid(a_tid, season))))
+    }
     
     # insert all players from box score if it exists
     # TODO: if we can't find the players from the box score, resolve them manually
@@ -256,9 +257,10 @@ def parse_pbp(cursor, gid: Union[str, int]):
     # player_d_s = []
     # roster_d_s = []
     
-    for data in [a_data, h_data]:
+    # TODO: this highkey sucks
+    for data in team_data.values():
         # clean the hell up out of this
-        # TODO: factor this so we can executemany instead
+        # TODO: factor this so we can executemany the inserts instead
         tid = str(data.tid)
         rid = data.rid
         plyr_s = a_plyr_s if tid == a_tid else h_plyr_s
@@ -276,7 +278,7 @@ def parse_pbp(cursor, gid: Union[str, int]):
             
     # pbp convenience functions
     def is_team_name(s: str):
-        return s == a_data.name or s == h_data.name
+        return s == team_data['home']['name'] or s == team_data['away']['name']
     
     def _get_or_warn(d: dict, key):
         # TODO: for player name typos, could option to search
@@ -325,7 +327,7 @@ def parse_pbp(cursor, gid: Union[str, int]):
             desc = play['text']    
 
             if 'homeAway' in play:
-                data = a_data if play['homeAway'] == 'away' else h_data 
+                data = team_data['homeAway']
                 tid = str(data.tid)
                 rid = str(data.rid)
 
@@ -383,7 +385,13 @@ def parse_pbp(cursor, gid: Union[str, int]):
                     # TO: just encode TV timeouts as neutral timeouts
                     pass
 
-            plays.append((plyid, gid, tid, period, time_min, time_sec, type_, subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast))
+            plays.append({'plyid': plyid, 'gid': gid, 'tid': tid, 'period': period, 
+                          'time_min': time_min, 'time_sec': time_sec, 'type': type_, 
+                          'subtype': subtype, 'away_score': away_score, 
+                          'home_score': home_score, 'pts_scored': pts_scored, 
+                          'desc': desc, 'plyr': plyr, 'plyr_ast': plyr_ast})
     cursor.executemany('''INSERT INTO Plays (plyid, gid, tid, period, time_min, time_sec, type, 
                              subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast)
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', plays)
+                          VALUES (:plyid, :gid, :tid, :period, :time_min, :time_sec, :type, 
+                             :subtype, :away_score, :home_score, :pts_scored, "desc, :plyr, :plyr_ast)''', 
+                        plays)
