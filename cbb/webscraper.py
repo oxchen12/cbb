@@ -1,6 +1,7 @@
 import re
 import typing
-import urllib
+import logging
+import urllib.request
 from http.client import HTTPResponse
 from bs4 import BeautifulSoup
 from enum import Enum, auto
@@ -10,6 +11,7 @@ class Page:
         self._url: str = url
         self._response: HTTPResponse = None
         self._soup: BeautifulSoup = None
+        self._invalid: bool | None = None
 
     def __repr__(self):
         return f'Page(url={self.url})'
@@ -17,15 +19,28 @@ class Page:
     @property
     def url(self):
         return self._url
+    
+    @property
+    def invalid(self):
+        return self._invalid
 
     @property
     def response(self):
         if self._response is None:
-            self._response = urllib.request.urlopen(self._url)
+            try:
+                self._response = urllib.request.urlopen(self._url)
+            except urllib.error.HTTPError as e:
+                self._invalid = True
+                logging.warning(f'Page(url={self.url}) could not be resolved ({e.code}: {e.reason})')
+            else:
+                self._invalid = False
         return self._response
     
     @property
     def soup(self):
+        if self.invalid:
+            logging.warning('Page could not be resolved, can\'t parse HTML')
+            return None
         if self._soup is None:
             html = str(self.response.read())
             self._soup = BeautifulSoup(html, 'html.parser')
