@@ -2,7 +2,7 @@
 .vscode/
 __pycache__/
 *.db
-*.sql
+# *.sql
 scratch.md
 OLD/
 kenpom/
