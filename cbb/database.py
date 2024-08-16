@@ -5,13 +5,35 @@ from contextlib import contextmanager
 
 SCHEMA_FILE = 'cbb.sql'     # contains the schema initialization code
 DB_FILE = 'CBB.db'          # database file
-conn = None                 # singular global database connection
+
+_conn = None                # singular global database connection
+
+def _delete_db(force = False) -> bool:
+    """Delete the database file."""
+    if _conn is not None:
+        _conn.rollback()
+    if not os.path.exists(DB_FILE):
+        print('Database file does not exist.')
+        return False
+    ans = 'y' if force else input('Are you sure you want to delete the existing database? [y/N]').lower()[0]
+    res = ans == 'y'
+    if res:
+        try:
+            print(f'Deleting {DB_FILE}...', end='')
+            os.remove(DB_FILE)
+            print('deleted.')
+        except OSError as e:
+            print(f'Something went wrong while deleting the DB file: {e}')
+            return False
+    else:
+        print('Canceled deleting database.')
+    return res
 
 def init_schema() -> bool:
-    """Initialize the schema to the appropriate `.db` file."""
+    """Initialize the schema to the appropriate `db` file."""
     with (
-        open(SCHEMA_FILE, 'r') as fp, 
-        sqlite3.connect(DB_FILE) as conn 
+        open(SCHEMA_FILE, 'r') as fp,
+        sqlite3.connect(DB_FILE) as conn
     ):
         if conn is None:
             logging.warning('connection could not be established')
@@ -22,27 +44,29 @@ def init_schema() -> bool:
     return True
 
 @contextmanager
-def db_connect(path: str):
-    global conn
-    if conn is None:
-        conn = sqlite3.connect(path)
+def conn(path: str = DB_FILE):
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(path)
     try:
-        cursor = conn.cursor()
-        yield cursor
+        yield _conn
     except Exception as e:
         logging.critical('error encountered, rolling back')
-        conn.rollback()
+        _conn.rollback()
         raise e
     else:
-        conn.commit()
-    finally:
-        conn.close()
+        _conn.commit()
+    # for now, we won't worry about explicitly closing the connection
+    # (see https://stackoverflow.com/questions/9561832/what-if-i-dont-close-the-database-connection-in-python-sqlite)
+    # finally:
+    #     _conn.close()
 
-def with_db_cursor(func, path: str = DB_FILE):
-    def _with_db_cursor(*args, **kwargs):
-        with db_connect(path) as cursor:
-            func(cursor, *args, **kwargs)
-    return _with_db_cursor
+def with_cursor(func):
+    def _with_cursor(*args, **kwargs):
+        with conn() as c:
+            res = func(c.cursor(), *args, **kwargs)
+        return res
+    return _with_cursor
 
 
     
