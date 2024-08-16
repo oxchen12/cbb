@@ -1,17 +1,17 @@
 CREATE TABLE IF NOT EXISTS Teams (
 	tid integer primary key NOT NULL UNIQUE,
-	cid INTEGER NOT NULL,
+	cid INTEGER,
 	name TEXT NOT NULL,
 	mascot TEXT NOT NULL,
 	FOREIGN KEY (cid) REFERENCES Conferences(cid)
 );
 CREATE TABLE IF NOT EXISTS Games (
 	gid integer primary key NOT NULL UNIQUE,
-	neutral REAL NOT NULL DEFAULT false,
+	neutral INTEGER NOT NULL DEFAULT 0,
 	home INTEGER NOT NULL,
 	away INTEGER NOT NULL,
-	date TEXT NOT NULL,
-	year INTEGER NOT NULL,
+	date VARCHAR(10) NOT NULL,
+	season INTEGER NOT NULL,
 	FOREIGN KEY (home) REFERENCES Teams(tid),
 	FOREIGN KEY (away) REFERENCES Teams(tid)
 );
@@ -19,32 +19,33 @@ CREATE TABLE IF NOT EXISTS Players (
 	pid integer primary key NOT NULL UNIQUE,
 	fname TEXT NOT NULL,
 	lname TEXT NOT NULL,
-	pos TEXT NOT NULL,
-	htfeet INTEGER NOT NULL,
-	htin INTEGER NOT NULL,
-	wt INTEGER NOT NULL,
-	fresh_year INTEGER,
-	hometown TEXT
+	pos VARCHAR(1),
+	htft INTEGER,    -- ht and wt will only correspond to current/most recent data; mostly available for NCAA/NBA players
+	htin INTEGER,
+	wt INTEGER
+	-- fresh_year INTEGER,      -- not easily obtained for non-NCAA players
+	-- hometown TEXT            -- not easily obtained for non-NCAA players
 );
 CREATE TABLE IF NOT EXISTS Plays (
-	plid integer primary key NOT NULL UNIQUE,
+	plyid INTEGER NOT NULL,
 	gid INTEGER NOT NULL,
 	tid INTEGER,
 	period INTEGER NOT NULL,
 	time_min INTEGER NOT NULL,
 	time_sec INTEGER NOT NULL,
-	type TEXT NOT NULL,
-	subtype TEXT NOT NULL,
+	type VARCHAR(3) NOT NULL,
+	subtype VARCHAR(3),
 	away_score INTEGER NOT NULL,
 	home_score INTEGER NOT NULL,
-	pts_scored INTEGER NOT NULL,
-	desc TEXT NOT NULL,
+	pts_scored INTEGER,
+	desc TEXT,
 	plyr INTEGER,
 	plyr_ast INTEGER,
 	FOREIGN KEY (gid) REFERENCES Games(gid),
 	FOREIGN KEY (tid) REFERENCES Teams(tid),
 	FOREIGN KEY (plyr) REFERENCES Players(pid),
-	FOREIGN KEY (plyr_ast) REFERENCES Players(pid)
+	FOREIGN KEY (plyr_ast) REFERENCES Players(pid),
+	PRIMARY KEY (plyid, gid)
 );
 CREATE TABLE IF NOT EXISTS Conferences (
 	cid integer primary key NOT NULL UNIQUE,
@@ -52,16 +53,15 @@ CREATE TABLE IF NOT EXISTS Conferences (
 	abbrev TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS Rosters (
-	rid integer NOT NULL UNIQUE,
+	rid integer PRIMARY KEY NOT NULL UNIQUE,
 	tid INTEGER NOT NULL,
-	year INTEGER NOT NULL,
+	season INTEGER NOT NULL,
 	FOREIGN KEY (tid) REFERENCES Teams(tid),
-	PRIMARY KEY (rid, tid, year)
+    UNIQUE (tid, season) ON CONFLICT IGNORE
 );
 CREATE TABLE IF NOT EXISTS PlayerSeasons (
 	pid INTEGER NOT NULL,
 	rid INTEGER NOT NULL,
-	num INTEGER NOT NULL,
 	FOREIGN KEY (pid) REFERENCES Players(pid),
 	FOREIGN KEY (rid) REFERENCES Roster(rid),
 	PRIMARY KEY (pid, rid)
