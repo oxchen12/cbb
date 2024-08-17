@@ -1,14 +1,15 @@
 import sqlite3
 import os
 import logging
+from typing import Optional
 from contextlib import contextmanager
 
 SCHEMA_FILE = 'cbb.sql'     # contains the schema initialization code
 DB_FILE = 'CBB.db'          # database file
 
-_conn = None                # singular global database connection
+_conn: Optional[sqlite3.Connection] = None                # singular global database connection
 
-def _delete_db(force = False) -> bool:
+def delete_db(force = False) -> bool:
     """Delete the database file."""
     if _conn is not None:
         _conn.rollback()
@@ -33,14 +34,14 @@ def init_schema() -> bool:
     """Initialize the schema to the appropriate `db` file."""
     with (
         open(SCHEMA_FILE, 'r') as fp,
-        sqlite3.connect(DB_FILE) as conn
+        conn() as c
     ):
-        if conn is None:
+        if c is None:
             logging.warning('connection could not be established')
             return False
-        cursor = conn.cursor()
+        cursor = c.cursor()
         cursor.executescript(fp.read())
-        conn.commit()
+        c.commit()
     return True
 
 @contextmanager
@@ -67,9 +68,3 @@ def with_cursor(func):
             res = func(c.cursor(), *args, **kwargs)
         return res
     return _with_cursor
-
-
-    
-if __name__ == '__main__':
-    if not os.file.exists(DB_FILE):
-        init_schema()
