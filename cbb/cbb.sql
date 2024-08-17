@@ -63,6 +63,6 @@ CREATE TABLE IF NOT EXISTS PlayerSeasons (
 	pid INTEGER NOT NULL,
 	rid INTEGER NOT NULL,
 	FOREIGN KEY (pid) REFERENCES Players(pid),
-	FOREIGN KEY (rid) REFERENCES Roster(rid),
+	FOREIGN KEY (rid) REFERENCES Rosters(rid),
 	PRIMARY KEY (pid, rid)
 );
