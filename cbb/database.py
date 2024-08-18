@@ -3,13 +3,16 @@ import os
 import logging
 from typing import Optional
 from contextlib import contextmanager
+from pathlib import Path
 
-SCHEMA_FILE = 'cbb.sql'     # contains the schema initialization code
-DB_FILE = 'CBB.db'          # database file
+MODULE_DIR = Path(__file__).parent
+SCHEMA_FILE = MODULE_DIR / 'cbb.sqlite'  # schema initialization file
+DB_FILE = MODULE_DIR / 'CBB.db'  # database file
 
-_conn: Optional[sqlite3.Connection] = None                # singular global database connection
+_conn: Optional[sqlite3.Connection] = None  # singular global database connection
 
-def delete_db(force = False) -> bool:
+
+def delete_db(force=False) -> bool:
     """Delete the database file."""
     if _conn is not None:
         _conn.rollback()
@@ -30,6 +33,7 @@ def delete_db(force = False) -> bool:
         print('Canceled deleting database.')
     return res
 
+
 def init_schema() -> bool:
     """Initialize the schema to the appropriate `db` file."""
     with (
@@ -44,11 +48,13 @@ def init_schema() -> bool:
         c.commit()
     return True
 
+
 @contextmanager
 def conn(path: str = DB_FILE):
     global _conn
     if _conn is None:
         _conn = sqlite3.connect(path)
+        _conn.row_factory = sqlite3.Row  # dict-like results from SELECT statements
     try:
         yield _conn
     except Exception as e:
@@ -57,14 +63,16 @@ def conn(path: str = DB_FILE):
         raise e
     else:
         _conn.commit()
+    # finally:
     # for now, we won't worry about explicitly closing the connection
     # (see https://stackoverflow.com/questions/9561832/what-if-i-dont-close-the-database-connection-in-python-sqlite)
-    # finally:
     #     _conn.close()
+
 
 def with_cursor(func):
     def _with_cursor(*args, **kwargs):
         with conn() as c:
             res = func(c.cursor(), *args, **kwargs)
         return res
+
     return _with_cursor
