@@ -2,9 +2,13 @@ import re
 import typing
 import logging
 import urllib.request
+import urllib.error
+import time
 from http.client import HTTPResponse
 from bs4 import BeautifulSoup
 from enum import Enum, auto
+
+MAX_HTTP_TRIES = 10
 
 class Page:
     def __init__(self, url: str):
@@ -27,13 +31,25 @@ class Page:
     @property
     def response(self):
         if self._response is None:
-            try:
-                self._response = urllib.request.urlopen(self._url)
-            except urllib.error.HTTPError as e:
-                self._invalid = True
-                logging.warning(f'Page(url={self.url}) could not be resolved ({e.code}: {e.reason})')
-            else:
-                self._invalid = False
+            finished = False
+            tries = 0
+            while finished and tries <= MAX_HTTP_TRIES:
+                try:
+                    self._response = urllib.request.urlopen(self._url)
+                    finished = True
+                except urllib.error.HTTPError as e:
+                    match e.code:
+                        case 503:
+                            # 503: Service Unavailable, should resolve by executing again
+                            time.sleep(0.01)
+                        case _:
+                            finished = True
+                            self._invalid = True
+                            logging.warning(f'Page(url={self.url}) could not be resolved ({e.code}: {e.reason})')
+                else:
+                    self._invalid = False
+                finally:
+                    tries += 1
         return self._response
     
     @property
