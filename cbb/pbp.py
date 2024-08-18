@@ -3,10 +3,11 @@ import logging
 import json
 from datetime import datetime
 from typing import Union, Iterable, Dict, Callable
-from database import with_cursor
-from webscraper import Page, GamePage
+from .database import with_cursor
+from .webscraper import Page, GamePage
 
 ESPN_HOME = 'https://www.espn.com/mens-college-basketball'
+
 
 def get_game_tids(gid: Union[str, int]):
     """Retrieves the tid's for the away[0] and home[1] teams from the given game"""
@@ -16,8 +17,9 @@ def get_game_tids(gid: Union[str, int]):
     selector = page.soup.select('div[class="Gamestrip__TeamContainer flex items-center"]')
     out = [re.search(r'/mens-college-basketball/team/_/id/(\d+)', str(g))[1] for g in selector]
     if len(out) < 2:
-        logging.warning('Team ids missing') # TODO: provide an alternative to encode with a new team id
+        logging.warning('Team ids missing')  # TODO: provide an alternative to encode with a new team id
     return out
+
 
 @with_cursor
 def fetch_cid_from_tid(cursor, tid: Union[str, int]):
@@ -29,6 +31,7 @@ def fetch_cid_from_tid(cursor, tid: Union[str, int]):
     conf_url = tp.soup.find('a', string='Full Standings')['href']
     cid = conf_url.split('/')[-1]
     res = cursor.execute('SELECT cid FROM Conferences WHERE cid=":cid"', {'cid': cid}).fetchone()
+
     if res is None:
         conf = Page(conf_url)
         s1 = conf.soup.select('h1[class="headline headline__h1 dib"]')
@@ -38,6 +41,7 @@ def fetch_cid_from_tid(cursor, tid: Union[str, int]):
         name = next(g.text for g in s2)
 
         cursor.execute('INSERT OR IGNORE INTO Conferences (cid, name, abbrev) VALUES (?, ?, ?)', (cid, name, abbrev))
+
     return cid
 
 
@@ -45,10 +49,12 @@ def fetch_cid_from_tid(cursor, tid: Union[str, int]):
 def fetch_team_data(cursor, tid: Union[str, int]):
     """Fetches team data and populates the database if it does not already exist"""
     tid = str(tid)
-    res = cursor.execute('SELECT * FROM Teams WHERE tid=:tid LIMIT 1', {'tid': tid}).fetchone() # `tid` should be unique within the database 
+    res = cursor.execute('SELECT * FROM Teams WHERE tid=:tid LIMIT 1',
+                         {'tid': tid}).fetchone()  # `tid` should be unique within the database
+
     if res is None:
         cid = fetch_cid_from_tid(tid)
-        
+
         # access team page for naming
         url = f'{ESPN_HOME}/team/schedule/_/id/{tid}'
         tp = Page(url)
@@ -59,23 +65,31 @@ def fetch_team_data(cursor, tid: Union[str, int]):
 
         # create new record for team
         cursor.execute('INSERT OR IGNORE INTO Teams (tid, cid, name, mascot) VALUES (?, ?, ?, ?)', res)
+
     return res
+
 
 @with_cursor
 def fetch_rid(cursor, tid: Union[str, int], season: Union[str, int]):
     tid = str(tid)
     season = str(season)
-    
-    res = cursor.execute('SELECT rid FROM Rosters WHERE tid=":tid" AND season=:season LIMIT 1', {'tid': tid, 'season': season}).fetchone()
+
+    res = cursor.execute('SELECT rid FROM Rosters WHERE tid=":tid" AND season=:season LIMIT 1',
+                         {'tid': tid, 'season': season}).fetchone()
+
     if res is None:
         # roster does not exist
         cursor.execute('INSERT INTO Rosters (tid, season) VALUES (:tid, :season)', {'tid': tid, 'season': season})
-        res = cursor.execute('SELECT rid FROM Rosters WHERE tid=:tid AND season=:season LIMIT 1', {'tid': tid, 'season': season}).fetchone()
+        res = cursor.execute('SELECT rid FROM Rosters WHERE tid=:tid AND season=:season LIMIT 1',
+                             {'tid': tid, 'season': season}).fetchone()
+
     rid = res[0]
     return rid
 
+
 RE_PLAY_TYPES = (
-    ('SHT', r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\s+(made|missed)\s+(Three Point Jumper|Jumper|Layup|Dunk|Free Throw|Hook Shot|Two Point Tip Shot)?\.?(?:\s+Assisted by\s+((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\.)?"),
+    ('SHT',
+     r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\s+(made|missed)\s+(Three Point Jumper|Jumper|Layup|Dunk|Free Throw|Hook Shot|Two Point Tip Shot)?\.?(?:\s+Assisted by\s+((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\.)?"),
     ('REB', r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\s+(Offensive|Defensive|Deadball Team)\s+Rebound\."),
     ('FL', r"(Technical )?Foul on\s+((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\."),
     ('TOV', r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\s+Turnover\."),
@@ -88,13 +102,13 @@ RE_PLAY_TYPES = (
 )
 ABBREV_SHOT_SUBTYPES = (
     ('3PJ', 'Three Point Jumper'),
-    ('3FG', ''),                    # fall-through for generic 3-pointer
+    ('3FG', ''),  # fall-through for generic 3-pointer
     ('2PJ', 'Jumper'),
     ('2PL', 'Layup'),
     ('2PD', 'Dunk'),
     ('2PT', 'Two Point Tip Shot'),
     ('2PH', 'Hook Shot'),
-    ('2FG', ''),                    # fall-through for generic 2-pointer
+    ('2FG', ''),  # fall-through for generic 2-pointer
     ('1FT', 'Free Throw'),
 )
 
@@ -110,42 +124,53 @@ ABBREV_POS = (
     ('C', 'Center')
 )
 
-def _get_abb_cond(table, value, cond = lambda x, y: x == y):
+
+def _get_abb_cond(table, value, cond=lambda x, y: x == y):
     for abb, l in table:
         if cond(value, l):
             return abb
+
 
 def _get_abb(table, value):
     return _get_abb_cond(table, value, lambda x, y: x == y)
 
 
 @with_cursor
-def select_unique_or_insert(cursor, sql: str, sql_params: Iterable | Dict, insert_func: Callable, *insert_args, **insert_kwargs):
+def select_unique_or_insert(cursor, sql: str, sql_params: Iterable | Dict, insert_func: Callable, *insert_args,
+                            **insert_kwargs):
     """Selects the unique record using the supplied SQL statement and inserts it if it doesn't exist."""
     res = cursor.execute(sql, sql_params).fetchone()
+
     if res is None:
-        insert_func(*insert_args, checked = True, **insert_kwargs)
+        insert_func(*insert_args, checked=True, **insert_kwargs)
         res = cursor.execute(sql, sql_params).fetchone()
     return res
+
 
 @with_cursor
 def insert_new_plyr(cursor, pid: Union[str, int], checked: bool = False):
     """Inserts a new player to the Players table if not already present."""
     pid = str(pid)
+
     if not checked:
         res = cursor.execute('SELECT pid FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid}).fetchone()
+
         if res is not None:
             return False
-    
+
     url = f'{ESPN_HOME}/player/_/id/{pid}'
     pl = Page(url)
-    hdr_s = pl.soup.select('div[class="PlayerHeader__Left flex items-center justify-start overflow-hidden brdr-clr-gray-09"]')
+    hdr_s = pl.soup.select(
+        'div[class="PlayerHeader__Left flex items-center justify-start overflow-hidden brdr-clr-gray-09"]')
     hdr, = (g for g in hdr_s)
-    
-    fname, lname = (nm.text.replace('.', '') for nm in hdr.select('h1[class="PlayerHeader__Name flex flex-column ttu fw-bold pr4 h2"] span'))
-    pos_long = hdr.select('ul[class="PlayerHeader__Team_Info list flex pt1 pr4 min-w-0 flex-basis-0 flex-shrink flex-grow nowrap"] li')[-1].text
+
+    fname, lname = (nm.text.replace('.', '') for nm in
+                    hdr.select('h1[class="PlayerHeader__Name flex flex-column ttu fw-bold pr4 h2"] span'))
+    pos_long = hdr.select(
+        'ul[class="PlayerHeader__Team_Info list flex pt1 pr4 min-w-0 flex-basis-0 flex-shrink flex-grow nowrap"] li')[
+        -1].text
     pos = _get_abb(ABBREV_POS, pos_long)
-    
+
     bio = hdr.select('ul[class="PlayerHeader__Bio_List flex flex-column list clr-gray-04"] li')
     # htwt_str, = (li.text for li in bio if li.text.startswith('HT/WT'))
     htft, htin, wt = None, None, None
@@ -154,7 +179,7 @@ def insert_new_plyr(cursor, pid: Union[str, int], checked: bool = False):
         htft, htin, wt = re.match(r'HT/WT(\d+)\' (\d+)", (\d+) lbs', htwt_str).groups()
     except ValueError as e:
         logging.debug(f'Missing ht/wt for {pid=} (error: {e})')
-    
+
     d = {
         'pid': pid,
         'fname': fname,
@@ -164,10 +189,13 @@ def insert_new_plyr(cursor, pid: Union[str, int], checked: bool = False):
         'htin': htin,
         'wt': wt
     }
-    
-    cursor.execute('INSERT INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)', d)
-    
+
+    cursor.execute(
+        'INSERT INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
+        d)
+
     return d
+
 
 @with_cursor
 def insert_new_plyrseason(cursor, pid: Union[str, int], rid: Union[str, int], checked: bool = False):
@@ -176,11 +204,14 @@ def insert_new_plyrseason(cursor, pid: Union[str, int], rid: Union[str, int], ch
     d = {'pid': pid, 'rid': rid}
     if not checked:
         res = cursor.execute('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1', d).fetchone()
+
         if res is not None:
             return False
-    
+
     cursor.execute('INSERT INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)', d)
+
     return d
+
 
 @with_cursor
 def parse_pbp(cursor, gid: Union[str, int]):
@@ -189,7 +220,7 @@ def parse_pbp(cursor, gid: Union[str, int]):
     can be fed into an `sqlite3` `executemany` function call.
     """
     gid = str(gid)
-    
+
     # TODO: lots of floating variables that are used throughout the function,
     #       see if i can break this up more logically
 
@@ -205,7 +236,7 @@ def parse_pbp(cursor, gid: Union[str, int]):
     gm_j = json.loads(gm_m[1].replace('\\', ''))
     dt = datetime.strptime(gm_j['dt'], '%Y-%m-%dT%H:%MZ')
     date = dt.strftime('%Y-%m-%d')
-    season = dt.year + int(datetime(dt.year, 7, 1) < dt)    # add 1 to year if dt is in the fall semester
+    season = dt.year + int(datetime(dt.year, 7, 1) < dt)  # add 1 to year if dt is in the fall semester
     neutral = 0 if 'neutralSite' not in gm_j else int(gm_j['neutralSite'])
     for tm in gm_j['tms']:
         if tm['isHome']:
@@ -215,23 +246,23 @@ def parse_pbp(cursor, gid: Union[str, int]):
 
     cursor.execute('''INSERT OR IGNORE INTO Games (gid, neutral, home, away, season, date) 
                       VALUES (:gid, :neutral, :home, :away, :season, :date)''',
-                      {
-                        'gid': gid,
-                        'neutral': neutral,
-                        'home': home,
-                        'away': away,
-                        'season': season,
-                        'date': date
-                      })
+                   {
+                       'gid': gid,
+                       'neutral': neutral,
+                       'home': home,
+                       'away': away,
+                       'season': season,
+                       'date': date
+                   })
 
     a_tid, h_tid = get_game_tids(gid)
-    
+
     data_fields = ('tid', 'cid', 'name', 'mascot', 'rid')
     team_data = {
         'home': dict(zip(data_fields, (*fetch_team_data(h_tid), fetch_rid(h_tid, season)))),
         'away': dict(zip(data_fields, (*fetch_team_data(a_tid), fetch_rid(a_tid, season))))
     }
-    
+
     # insert all players from box score if it exists
     # TODO: if we can't find the players from the box score, resolve them manually
     #       by using their name against/inserting into the appropriate roster
@@ -243,14 +274,14 @@ def parse_pbp(cursor, gid: Union[str, int]):
         if bs_ath_s:
             bs_plyr_s.append(bs_ath_s)
     a_plyr_s, h_plyr_s = bs_plyr_s
-    
-    players = { # map player names to pid
+
+    players = {  # map player names to pid
         a_tid: dict(),
-        h_tid: dict()    
-        }    
+        h_tid: dict()
+    }
     # player_d_s = []
     # roster_d_s = []
-    
+
     # TODO: this highkey sucks
     for data in team_data.values():
         # TODO: factor this so we can executemany the inserts instead
@@ -259,20 +290,22 @@ def parse_pbp(cursor, gid: Union[str, int]):
         plyr_s = a_plyr_s if tid == a_tid else h_plyr_s
         for r in plyr_s:
             pid = re.search(r'.*:(\d+)', r['data-player-uid'])[1]
-        
-            plyr_d = select_unique_or_insert('SELECT fname, lname FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid}, insert_new_plyr, pid)
-            select_unique_or_insert('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1', {'pid': pid, 'rid': rid}, insert_new_plyrseason, pid, rid)
-            
+
+            plyr_d = select_unique_or_insert('SELECT fname, lname FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid},
+                                             insert_new_plyr, pid)
+            select_unique_or_insert('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1',
+                                    {'pid': pid, 'rid': rid}, insert_new_plyrseason, pid, rid)
+
             # player_d_s.append(plyr_d)
             # roster_d_s.append(roster_d)
-                    
+
             plyr_name = f'{plyr_d[0]} {plyr_d[1]}'
             players[tid][plyr_name] = pid
-            
+
     # pbp convenience functions
     def is_team_name(s: str):
         return s == team_data['home']['name'] or s == team_data['away']['name']
-    
+
     def _get_or_warn(d: dict, key):
         # TODO: for player name typos, could option to search
         #       manually O(n) through dict keys for last name
@@ -280,7 +313,7 @@ def parse_pbp(cursor, gid: Union[str, int]):
         if key in d:
             return d[key]
         # logging.warning(f'Couldn\'t find {key=} in dict={d}')  
-    
+
     def _get_pts_scored(away_score, home_score, last_play):
         try:
             if last_play['away_score'] != away_score:
@@ -291,10 +324,10 @@ def parse_pbp(cursor, gid: Union[str, int]):
                 return home_score - last_play['home_score']
         except IndexError:
             pass
-    
+
     # parse play-by-play
     plays = []
-    for _, pd in enumerate(pbp_j):
+    for pd in pbp_j:
         for play in pd:
             # TODO: I could pull this section out to make it more readable
             # these fields are not always present
@@ -314,15 +347,19 @@ def parse_pbp(cursor, gid: Union[str, int]):
                 data = team_data[play['homeAway']]
                 tid = str(data['tid'])
                 # rid = str(data['rid'])
-            if 'text' not in play:      # desc not provided
+            if 'text' not in play:  # desc not provided
                 # check if play was scoring play
                 type_ = None
                 if play['scoringPlay']:
-                    # check who scored and how muchs
+                    # check who scored and how many points
                     type_ = 'SHT'
                     if plays:
                         pts_scored = _get_pts_scored(away_score, home_score, plays[-1])
-                plays.append((plyid, gid, tid, period, time_min, time_sec, type_, subtype, away_score, home_score, pts_scored, None, plyr, plyr_ast))
+                plays.append({'plyid': plyid, 'gid': gid, 'tid': tid, 'period': period,
+                              'time_min': time_min, 'time_sec': time_sec, 'type': type_,
+                              'subtype': subtype, 'away_score': away_score,
+                              'home_score': home_score, 'pts_scored': pts_scored,
+                              'desc': None, 'plyr': plyr, 'plyr_ast': plyr_ast})
                 continue
             desc = play['text']
 
@@ -332,27 +369,26 @@ def parse_pbp(cursor, gid: Union[str, int]):
                 if m is not None:
                     type_ = t
                     break
-            
+
             g = m.groups()
             match type_:
                 case 'SHT':
                     plyr_name, sht_result, sht_sub, ast_name = g
-                    plyr_name = plyr_name.replace('.', '')                  # always exclude periods from player names
-                    plyr = _get_or_warn(players[tid], plyr_name)            # get pid of shooter
-                    if sht_sub is not None:                                 # some missed shots do not have encoded subtype
-                        subtype = _get_abb(ABBREV_SHOT_SUBTYPES, sht_sub)   # encode subtype
+                    plyr_name = plyr_name.replace('.', '')  # always exclude periods from player names
+                    plyr = _get_or_warn(players[tid], plyr_name)  # get pid of shooter
+                    if sht_sub is not None:  # some missed shots do not have encoded subtype
+                        subtype = _get_abb(ABBREV_SHOT_SUBTYPES, sht_sub)  # encode subtype
 
-                    pts_scored = 0                                          # default 0 points
+                    pts_scored = 0  # default 0 points
                     if sht_result == 'made':
                         if sht_sub is not None:
-                            pts_scored = int(subtype[0])                    # if made, determine points from subtype
+                            pts_scored = int(subtype[0])  # if made, determine points from subtype
                         else:
                             pts_scored = _get_pts_scored(away_score, home_score, plays[-1])
                             subtype = '3FG' if pts_scored == 3 else '2FG'
                         if ast_name is not None:
-                            # get pid of assister
                             ast_name = ast_name.replace('.', '')
-                            plyr_ast = _get_or_warn(players[tid], ast_name)
+                            plyr_ast = _get_or_warn(players[tid], ast_name)  # get pid of assister
 
                 case 'REB' | 'TOV':
                     # can be attributed to team or individual
@@ -364,16 +400,15 @@ def parse_pbp(cursor, gid: Union[str, int]):
                     if type_ == 'REB':
                         reb_sub = g[1]
                         subtype = _get_abb(ABBREV_REB_SUBTYPES, reb_sub)
-                
+
                 case 'FL':
                     tech, plyr_name = g
                     if tech:
                         subtype = 'TCH'
                     plyr_name = plyr_name.replace('.', '')
                     plyr = _get_or_warn(players[tid], plyr_name)
-                    
-                
-                case 'STL' | 'BLK': 
+
+                case 'STL' | 'BLK':
                     plyr_name = g[0].replace('.', '')
                     plyr = _get_or_warn(players[tid], plyr_name)
 
@@ -381,13 +416,13 @@ def parse_pbp(cursor, gid: Union[str, int]):
                     # TO: just encode TV timeouts as neutral timeouts
                     pass
 
-            plays.append({'plyid': plyid, 'gid': gid, 'tid': tid, 'period': period, 
-                          'time_min': time_min, 'time_sec': time_sec, 'type': type_, 
-                          'subtype': subtype, 'away_score': away_score, 
-                          'home_score': home_score, 'pts_scored': pts_scored, 
+            plays.append({'plyid': plyid, 'gid': gid, 'tid': tid, 'period': period,
+                          'time_min': time_min, 'time_sec': time_sec, 'type': type_,
+                          'subtype': subtype, 'away_score': away_score,
+                          'home_score': home_score, 'pts_scored': pts_scored,
                           'desc': desc, 'plyr': plyr, 'plyr_ast': plyr_ast})
     cursor.executemany('''INSERT OR IGNORE INTO Plays (plyid, gid, tid, period, time_min, time_sec, type, 
                              subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast)
                           VALUES (:plyid, :gid, :tid, :period, :time_min, :time_sec, :type, 
-                             :subtype, :away_score, :home_score, :pts_scored, :desc, :plyr, :plyr_ast)''', 
-                        plays)
+                             :subtype, :away_score, :home_score, :pts_scored, :desc, :plyr, :plyr_ast)''',
+                       plays)
