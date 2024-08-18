@@ -2,91 +2,11 @@ import re
 import logging
 import json
 from datetime import datetime
-from typing import Union, Iterable, Dict, Callable
+from typing import Iterable, Dict, Callable
 from .database import with_cursor
 from .webscraper import Page, GamePage
 
 ESPN_HOME = 'https://www.espn.com/mens-college-basketball'
-
-
-def get_game_tids(gid: Union[str, int]):
-    """Retrieves the tid's for the away[0] and home[1] teams from the given game"""
-    gid = str(gid)
-    url = f'{ESPN_HOME}/playbyplay/_/gameId/{gid}'
-    page = Page(url)
-    selector = page.soup.select('div[class="Gamestrip__TeamContainer flex items-center"]')
-    out = [re.search(r'/mens-college-basketball/team/_/id/(\d+)', str(g))[1] for g in selector]
-    if len(out) < 2:
-        logging.warning('Team ids missing')  # TODO: provide an alternative to encode with a new team id
-    return out
-
-
-@with_cursor
-def fetch_cid_from_tid(cursor, tid: Union[str, int]):
-    """Fetches cid from team id"""
-    # this function assumes that the team is new and does not yet store its own `cid`
-    tp_url = f'{ESPN_HOME}/team/_/id/{tid}'
-    tp = Page(tp_url)
-    # idk if this is the best way to do it but it should work every time
-    conf_url = tp.soup.find('a', string='Full Standings')['href']
-    cid = conf_url.split('/')[-1]
-    res = cursor.execute('SELECT cid FROM Conferences WHERE cid=":cid"', {'cid': cid}).fetchone()
-
-    if res is None:
-        conf = Page(conf_url)
-        s1 = conf.soup.select('h1[class="headline headline__h1 dib"]')
-        abbrev = next(g.text for g in s1).removesuffix("Men's College Basketball Standings - 2023-24").strip()
-
-        s2 = conf.soup.select('div[class="Table__Title"]')
-        name = next(g.text for g in s2)
-
-        cursor.execute('INSERT OR IGNORE INTO Conferences (cid, name, abbrev) VALUES (?, ?, ?)', (cid, name, abbrev))
-
-    return cid
-
-
-@with_cursor
-def fetch_team_data(cursor, tid: Union[str, int]):
-    """Fetches team data and populates the database if it does not already exist"""
-    tid = str(tid)
-    res = cursor.execute('SELECT * FROM Teams WHERE tid=:tid LIMIT 1',
-                         {'tid': tid}).fetchone()  # `tid` should be unique within the database
-
-    if res is None:
-        cid = fetch_cid_from_tid(tid)
-
-        # access team page for naming
-        url = f'{ESPN_HOME}/team/schedule/_/id/{tid}'
-        tp = Page(url)
-        selector = tp.soup.select('span[class="flex flex-wrap"] span')
-        name, mascot = (g.text for g in selector)
-
-        res = (tid, cid, name, mascot)
-
-        # create new record for team
-        cursor.execute('INSERT OR IGNORE INTO Teams (tid, cid, name, mascot) VALUES (?, ?, ?, ?)', res)
-
-    return res
-
-
-@with_cursor
-def fetch_rid(cursor, tid: Union[str, int], season: Union[str, int]):
-    tid = str(tid)
-    season = str(season)
-
-    res = cursor.execute('SELECT rid FROM Rosters WHERE tid=":tid" AND season=:season LIMIT 1',
-                         {'tid': tid, 'season': season}).fetchone()
-
-    if res is None:
-        # roster does not exist
-        cursor.execute('INSERT INTO Rosters (tid, season) VALUES (:tid, :season)', {'tid': tid, 'season': season})
-        res = cursor.execute('SELECT rid FROM Rosters WHERE tid=:tid AND season=:season LIMIT 1',
-                             {'tid': tid, 'season': season}).fetchone()
-
-    rid = res[0]
-    return rid
-
-
 RE_PLAY_TYPES = (
     ('SHT',
      r"((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\s+(made|missed)\s+(Three Point Jumper|Jumper|Layup|Dunk|Free Throw|Hook Shot|Two Point Tip Shot)?\.?(?:\s+Assisted by\s+((?:[A-Za-z0-9.'-]+ )*[A-Za-z0-9.'-]+)\.)?"),
@@ -125,38 +45,98 @@ ABBREV_POS = (
 )
 
 
-def _get_abb_cond(table, value, cond=lambda x, y: x == y):
-    for abb, l in table:
-        if cond(value, l):
-            return abb
-
-
-def _get_abb(table, value):
-    return _get_abb_cond(table, value, lambda x, y: x == y)
+def get_game_tids(gid: str | int):
+    """Retrieves the tid's for the away[0] and home[1] teams from the given game"""
+    gid = str(gid)
+    url = f'{ESPN_HOME}/playbyplay/_/gameId/{gid}'
+    page = Page(url)
+    selector = page.soup.select('div[class="Gamestrip__TeamContainer flex items-center"]')
+    out = [re.search(r'/mens-college-basketball/team/_/id/(\d+)', str(g))[1] for g in selector]
+    if len(out) < 2:
+        logging.warning('Team ids missing')  # TODO: provide an alternative to encode with a new team id
+    return out
 
 
 @with_cursor
-def select_unique_or_insert(cursor, sql: str, sql_params: Iterable | Dict, insert_func: Callable, *insert_args,
-                            **insert_kwargs):
-    """Selects the unique record using the supplied SQL statement and inserts it if it doesn't exist."""
-    res = cursor.execute(sql, sql_params).fetchone()
+def fetch_cid_from_tid(cursor, tid: str | int):
+    """Fetches cid from team id"""
+    # this function assumes that the team is new and does not yet store its own `cid`
+    tp_url = f'{ESPN_HOME}/team/_/id/{tid}'
+    tp = Page(tp_url)
+    # idk if this is the best way to do it but it should work every time
+    conf_url = tp.soup.find('a', string='Full Standings')['href']
+    cid = conf_url.split('/')[-1]
+    res = cursor.execute('SELECT cid FROM Conferences WHERE cid=":cid"', {'cid': cid}).fetchone()
 
     if res is None:
-        insert_func(*insert_args, checked=True, **insert_kwargs)
-        res = cursor.execute(sql, sql_params).fetchone()
+        conf = Page(conf_url)
+        s1 = conf.soup.select('h1[class="headline headline__h1 dib"]')
+        abbrev = next(g.text for g in s1).removesuffix("Men's College Basketball Standings - 2023-24").strip()
+
+        s2 = conf.soup.select('div[class="Table__Title"]')
+        name = next(g.text for g in s2)
+
+        cursor.execute('INSERT OR IGNORE INTO Conferences (cid, name, abbrev) VALUES (?, ?, ?)', (cid, name, abbrev))
+
+    return cid
+
+
+@with_cursor
+def fetch_team_data(cursor, tid: str | int):
+    """Fetches team data and populates the database if it does not already exist"""
+    tid = str(tid)
+    res = cursor.execute('SELECT * FROM Teams WHERE tid=:tid LIMIT 1',
+                         {'tid': tid}).fetchone()  # `tid` should be unique within the database
+
+    if res is None:
+        cid = fetch_cid_from_tid(tid)
+
+        # access team page for naming
+        url = f'{ESPN_HOME}/team/schedule/_/id/{tid}'
+        tp = Page(url)
+        selector = tp.soup.select('span[class="flex flex-wrap"] span')
+        name, mascot = (g.text for g in selector)
+
+        res = {
+            'tid': tid,
+            'cid': cid,
+            'name': name,
+            'mascot': mascot
+        }
+
+        # create new record for team
+        cursor.execute('INSERT OR IGNORE INTO Teams (tid, cid, name, mascot) VALUES (:tid, :cid, :name, :mascot)', res)
+
     return res
 
 
 @with_cursor
-def insert_new_plyr(cursor, pid: Union[str, int], checked: bool = False):
-    """Inserts a new player to the Players table if not already present."""
+def fetch_rid(cursor, tid: str | int, season: str | int):
+    tid = str(tid)
+    season = str(season)
+
+    res = cursor.execute('SELECT rid FROM Rosters WHERE tid=":tid" AND season=:season LIMIT 1',
+                         {'tid': tid, 'season': season}).fetchone()
+
+    if res is None:
+        # roster does not exist
+        cursor.execute('INSERT INTO Rosters (tid, season) VALUES (:tid, :season)', {'tid': tid, 'season': season})
+        res = cursor.execute('SELECT rid FROM Rosters WHERE tid=:tid AND season=:season LIMIT 1',
+                             {'tid': tid, 'season': season}).fetchone()
+
+    rid = res['rid']
+    return rid
+
+
+def _get_abb(table, value):
+    for abb, l in table:
+        if value == l:
+            return abb
+
+
+def fetch_plyr_data(pid: str | int):
+    """Fetches player data from ESPN."""
     pid = str(pid)
-
-    if not checked:
-        res = cursor.execute('SELECT pid FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid}).fetchone()
-
-        if res is not None:
-            return False
 
     url = f'{ESPN_HOME}/player/_/id/{pid}'
     pl = Page(url)
@@ -172,7 +152,6 @@ def insert_new_plyr(cursor, pid: Union[str, int], checked: bool = False):
     pos = _get_abb(ABBREV_POS, pos_long)
 
     bio = hdr.select('ul[class="PlayerHeader__Bio_List flex flex-column list clr-gray-04"] li')
-    # htwt_str, = (li.text for li in bio if li.text.startswith('HT/WT'))
     htft, htin, wt = None, None, None
     try:
         htwt_str, = (li.text for li in bio if li.text.startswith('HT/WT'))
@@ -180,7 +159,7 @@ def insert_new_plyr(cursor, pid: Union[str, int], checked: bool = False):
     except ValueError as e:
         logging.debug(f'Missing ht/wt for {pid=} (error: {e})')
 
-    d = {
+    return {
         'pid': pid,
         'fname': fname,
         'lname': lname,
@@ -190,31 +169,9 @@ def insert_new_plyr(cursor, pid: Union[str, int], checked: bool = False):
         'wt': wt
     }
 
-    cursor.execute(
-        'INSERT INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
-        d)
-
-    return d
-
 
 @with_cursor
-def insert_new_plyrseason(cursor, pid: Union[str, int], rid: Union[str, int], checked: bool = False):
-    pid = str(pid)
-    rid = str(rid)
-    d = {'pid': pid, 'rid': rid}
-    if not checked:
-        res = cursor.execute('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1', d).fetchone()
-
-        if res is not None:
-            return False
-
-    cursor.execute('INSERT INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)', d)
-
-    return d
-
-
-@with_cursor
-def parse_pbp(cursor, gid: Union[str, int]):
+def parse_pbp(cursor, gid: str | int):
     """
     Parses plays from a given game and returns them as a list of lists that
     can be fed into an `sqlite3` `executemany` function call.
@@ -266,6 +223,10 @@ def parse_pbp(cursor, gid: Union[str, int]):
     # insert all players from box score if it exists
     # TODO: if we can't find the players from the box score, resolve them manually
     #       by using their name against/inserting into the appropriate roster
+    # TODO: while almost all box score participants also appear in the play-by-play,
+    #       it is possible for players to be parsed here without ever appearing in
+    #       Plays, making it impossible to reliably determine whether a player played
+    #       in a game and how many they've played in
     bs = gp.boxscore
     bs_tab_s = bs.soup.select('tbody[class="Table__TBODY"]')
     bs_plyr_s = []
@@ -279,28 +240,36 @@ def parse_pbp(cursor, gid: Union[str, int]):
         a_tid: dict(),
         h_tid: dict()
     }
-    # player_d_s = []
-    # roster_d_s = []
+    plyr_d_add = []
+    plyrseason_d_add = []
 
-    # TODO: this highkey sucks
     for data in team_data.values():
-        # TODO: factor this so we can executemany the inserts instead
         tid = str(data['tid'])
         rid = data['rid']
         plyr_s = a_plyr_s if tid == a_tid else h_plyr_s
         for r in plyr_s:
             pid = re.search(r'.*:(\d+)', r['data-player-uid'])[1]
 
-            plyr_d = select_unique_or_insert('SELECT fname, lname FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid},
-                                             insert_new_plyr, pid)
-            select_unique_or_insert('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1',
-                                    {'pid': pid, 'rid': rid}, insert_new_plyrseason, pid, rid)
+            plyr_d = cursor.execute('SELECT fname, lname FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid})
+            if plyr_d is None:
+                plyr_d = fetch_plyr_data(pid)
+                plyr_d_add.append(plyr_d)
 
-            # player_d_s.append(plyr_d)
-            # roster_d_s.append(roster_d)
+            plyrseason_d = cursor.execute('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1',
+                                          {'pid': pid, 'rid': rid})
+            if plyrseason_d is None:
+                plyrseason_d = {'rid': rid, 'tid': tid, 'season': season}
+                plyrseason_d_add.append(plyrseason_d)
 
-            plyr_name = f'{plyr_d[0]} {plyr_d[1]}'
+            plyr_name = f'{plyr_d['fname']} {plyr_d['lname']}'
             players[tid][plyr_name] = pid
+
+        # insert missing Players and PlayerSeasons to appropriate tables
+        cursor.executemany(
+            'INSERT OR IGNORE INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
+            plyr_d_add)
+        cursor.executemany('INSERT OR IGNORE INTO Players (rid, tid, season) VALUES (:rid, :tid, :season)',
+                           plyrseason_d_add)
 
     # pbp convenience functions
     def is_team_name(s: str):
