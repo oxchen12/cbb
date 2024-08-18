@@ -33,7 +33,7 @@ class Page:
         if self._response is None:
             finished = False
             tries = 0
-            while finished and tries <= MAX_HTTP_TRIES:
+            while not finished and tries <= MAX_HTTP_TRIES:
                 try:
                     self._response = urllib.request.urlopen(self._url)
                     finished = True
@@ -43,9 +43,9 @@ class Page:
                             # 503: Service Unavailable, should resolve by executing again
                             time.sleep(0.01)
                         case _:
-                            finished = True
                             self._invalid = True
                             logging.warning(f'Page(url={self.url}) could not be resolved ({e.code}: {e.reason})')
+                            finished = True
                 else:
                     self._invalid = False
                 finally:
