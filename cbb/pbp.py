@@ -1,8 +1,8 @@
+import time
 import re
 import logging
 import json
 from datetime import datetime
-from typing import Iterable, Dict, Callable
 from .database import with_cursor
 from .webscraper import Page, GamePage
 
@@ -44,6 +44,8 @@ ABBREV_POS = (
     ('C', 'Center')
 )
 
+TODO_ERROR = 91202
+
 
 def get_game_tids(gid: str | int):
     """Retrieves the tid's for the away[0] and home[1] teams from the given game"""
@@ -51,9 +53,15 @@ def get_game_tids(gid: str | int):
     url = f'{ESPN_HOME}/playbyplay/_/gameId/{gid}'
     page = Page(url)
     selector = page.soup.select('div[class="Gamestrip__TeamContainer flex items-center"]')
-    out = [re.search(r'/mens-college-basketball/team/_/id/(\d+)', str(g))[1] for g in selector]
+    out = [re.search(r'/mens-college-basketball/team/_/id/(\d+)', str(g)) for g in selector]
+    out = [e[1] for e in out if e is not None]
     if len(out) < 2:
-        logging.warning('Team ids missing')  # TODO: provide an alternative to encode with a new team id
+        # TODO: provide an alternative to encode with a new team id that doesn't collide with ESPN's
+        #       -- for now, we will just have a special case exit for parse_pbp
+        #       -- this is part of a larger issue where we need to be able to handle data that simply
+        #       -- does not exist on ESPN's website, e.g., DII teams and players
+        logging.warning('At least one team id missing, skipping this game')
+        return TODO_ERROR
     return out
 
 
@@ -71,12 +79,13 @@ def fetch_cid_from_tid(cursor, tid: str | int):
     if res is None:
         conf = Page(conf_url)
         s1 = conf.soup.select('h1[class="headline headline__h1 dib"]')
-        abbrev = next(g.text for g in s1).removesuffix("Men's College Basketball Standings - 2023-24").strip()
+        abbrev = s1[0].text.removesuffix("Men's College Basketball Standings - 2023-24").strip()
 
         s2 = conf.soup.select('div[class="Table__Title"]')
-        name = next(g.text for g in s2)
+        name = s2[0].text
 
-        cursor.execute('INSERT OR IGNORE INTO Conferences (cid, name, abbrev) VALUES (?, ?, ?)', (cid, name, abbrev))
+        cursor.execute('INSERT OR IGNORE INTO Conferences (cid, name, abbrev) VALUES (:cid, :name, :abbrev)',
+                       {'cid': cid, 'name': name, 'abbrev': abbrev})
 
     return cid
 
@@ -107,7 +116,7 @@ def fetch_team_data(cursor, tid: str | int):
         # create new record for team
         cursor.execute('INSERT OR IGNORE INTO Teams (tid, cid, name, mascot) VALUES (:tid, :cid, :name, :mascot)', res)
 
-    return res
+    return dict(res)
 
 
 @with_cursor
@@ -173,18 +182,21 @@ def fetch_plyr_data(pid: str | int):
 @with_cursor
 def parse_pbp(cursor, gid: str | int):
     """
-    Parses plays from a given game and returns them as a list of lists that
-    can be fed into an `sqlite3` `executemany` function call.
+    Parses plays from a given game and inserts them into the database, along with any other missing game data.
     """
     gid = str(gid)
-
-    # TODO: lots of floating variables that are used throughout the function,
-    #       see if i can break this up more logically
+    # TODO: if we can assume that a game can only be inserted by a call to parse_pbp, we can exit here
+    # cursor.execute('SELECT gid FROM Games WHERE gid=:gid', {'gid': gid})
+    # if cursor.fetchone():
+    #     return
 
     # grab play-by-play data from game page
     gp = GamePage(gid)
     pbp = gp.plays
     pbp_m = re.search(r'\"pbp\":\s*\{\"playGrps\":(.+\]\]),\"tms\".*\}', str(pbp.soup), flags=re.DOTALL)
+    if not pbp_m:
+        logging.warning(f'Play by play data is not available for {gid=}')
+        return None
     pbp_j = json.loads(pbp_m[1].replace('\\', ''))
 
     # fetch game data
@@ -212,17 +224,18 @@ def parse_pbp(cursor, gid: str | int):
                        'date': date
                    })
 
-    a_tid, h_tid = get_game_tids(gid)
-
-    data_fields = ('tid', 'cid', 'name', 'mascot', 'rid')
+    # a_tid, h_tid = get_game_tids(gid)
+    res = get_game_tids(gid)
+    if res == TODO_ERROR:
+        return None 
+    a_tid, h_tid = res
+    
     team_data = {
-        'home': dict(zip(data_fields, (*fetch_team_data(h_tid), fetch_rid(h_tid, season)))),
-        'away': dict(zip(data_fields, (*fetch_team_data(a_tid), fetch_rid(a_tid, season))))
+        'home': {**fetch_team_data(h_tid), **{'rid': fetch_rid(h_tid, season)}},
+        'away': {**fetch_team_data(a_tid), **{'rid': fetch_rid(a_tid, season)}}
     }
 
     # insert all players from box score if it exists
-    # TODO: if we can't find the players from the box score, resolve them manually
-    #       by using their name against/inserting into the appropriate roster
     # TODO: while almost all box score participants also appear in the play-by-play,
     #       it is possible for players to be parsed here without ever appearing in
     #       Plays, making it impossible to reliably determine whether a player played
@@ -250,25 +263,25 @@ def parse_pbp(cursor, gid: str | int):
         for r in plyr_s:
             pid = re.search(r'.*:(\d+)', r['data-player-uid'])[1]
 
-            plyr_d = cursor.execute('SELECT fname, lname FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid})
+            plyr_d = cursor.execute('SELECT fname, lname FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid}).fetchone()
             if plyr_d is None:
                 plyr_d = fetch_plyr_data(pid)
                 plyr_d_add.append(plyr_d)
 
             plyrseason_d = cursor.execute('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1',
-                                          {'pid': pid, 'rid': rid})
+                                          {'pid': pid, 'rid': rid}).fetchone()
             if plyrseason_d is None:
-                plyrseason_d = {'rid': rid, 'tid': tid, 'season': season}
+                plyrseason_d = {'pid': pid, 'rid': rid}
                 plyrseason_d_add.append(plyrseason_d)
 
-            plyr_name = f'{plyr_d['fname']} {plyr_d['lname']}'
+            plyr_name = f'{plyr_d["fname"]} {plyr_d["lname"]}'
             players[tid][plyr_name] = pid
 
         # insert missing Players and PlayerSeasons to appropriate tables
         cursor.executemany(
             'INSERT OR IGNORE INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
             plyr_d_add)
-        cursor.executemany('INSERT OR IGNORE INTO Players (rid, tid, season) VALUES (:rid, :tid, :season)',
+        cursor.executemany('INSERT OR IGNORE INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)',
                            plyrseason_d_add)
 
     # pbp convenience functions
