@@ -2,6 +2,7 @@ import context
 import time
 from cbb import database
 from pprint import pprint
+from prettytable import PrettyTable
 
 
 def timeop(func, display=None, *args, **kwargs):
@@ -22,27 +23,40 @@ def timeop(func, display=None, *args, **kwargs):
     print(running, end='')
 
     start = time.perf_counter()
-    res = func(*args, **kwargs)
-    dur = time.perf_counter() - start
+    try:
+        res = func(*args, **kwargs)
+    except Exception as e:
+        dur = time.perf_counter() - start
+        print(f'exited with error {e=} in {dur:.2f} seconds')
+    else:
+        dur = time.perf_counter() - start
+        print(f'returned {res=} in {dur:.2f} seconds')
 
-    print(f'returned {res=} in {dur:.2f} seconds')
+    return dur
 
 
-def timeopmany(func, display=None, args_gen=None):
+def timeopmany(func, display=None, args_gen=None, level=0, extras=False):
     if args_gen is None:
         return
 
-    print(f'Running {display} {len(args_gen)} times... {{')
+    execs = len(list(args_gen))
 
-    count = 0
+    print(f'Running {display} {execs} times... {{')
+
+    durs = []
+    prefix = '\t' * (level + 1)
     start = time.perf_counter()
-    for arg in args_gen:
-        print(f'\t[{count}]  \t', end='')
-        timeop(func, display, arg)
-        count += 1
-    dur = time.perf_counter() - start
+    for args in args_gen:
+        print(f'{prefix}[{len(durs)}]  \t', end='')
+        dur = timeop(func, display, *args)
+        durs.append(dur)
+    overall_dur = time.perf_counter() - start
 
-    print(f'}} Finished {len(args_gen)} executions in {dur:.2f} seconds')
+    fin = f'}} Finished {execs} executions in {overall_dur:.2f} seconds'
+    if extras:
+        fin += f' (avg={sum(durs)/execs:.2f}, max={max(durs):.2f}, min={min(durs):.2f})'
+    print(fin)
+    return {'overall': overall_dur, 'individual': durs}
 
 
 @database.with_cursor
@@ -57,15 +71,20 @@ def sql(cursor, sql_exp: str, sql_params=None):
     if sql_params is None:
         sql_params = tuple()
     res = cursor.execute(sql_exp, sql_params).fetchall()
-    if len(res) == 1:
-        res = res[0]
-    if len(res) == 1:
-        res = res[0]
     return res
 
 
 def sqlp(sql_exp: str, sql_params=None):
-    pprint(sql(sql_exp, sql_params))
+    res = sql(sql_exp, sql_params)
+    if res is None:
+        print('No results')
+        return
+    table = PrettyTable()
+    table.field_names = res[0].keys()
+    for row in res:
+        table.add_row(tuple(row))
+    print(table)
+
 
 
 def reset_db():
