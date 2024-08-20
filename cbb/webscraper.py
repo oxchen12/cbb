@@ -1,5 +1,5 @@
+import asyncio
 import re
-import typing
 import logging
 import urllib.request
 import urllib.error
@@ -7,8 +7,10 @@ import time
 from http.client import HTTPResponse
 from bs4 import BeautifulSoup
 from enum import Enum, auto
+from typing import Iterable, Union
 
 MAX_HTTP_TRIES = 10
+
 
 class Page:
     def __init__(self, url: str):
@@ -23,7 +25,7 @@ class Page:
     @property
     def url(self):
         return self._url
-    
+
     @property
     def invalid(self):
         return self._invalid
@@ -51,7 +53,7 @@ class Page:
                 finally:
                     tries += 1
         return self._response
-    
+
     @property
     def soup(self):
         if self.invalid:
@@ -61,7 +63,8 @@ class Page:
             html = str(self.response.read())
             self._soup = BeautifulSoup(html, 'html.parser')
         return self._soup
-    
+
+
 class GamePage(Page):
     URL_TEMPLATE = 'https://www.espn.com/mens-college-basketball/{}/_/gameId/{}'
 
@@ -70,19 +73,19 @@ class GamePage(Page):
         RECAP = auto()
         BOX = auto()
         PLAYS = auto()
-    
-    def __init__(self, gid: typing.Union[str, int]):
+
+    def __init__(self, gid: Union[str, int]):
         gid = str(gid)
-        assert(re.match(r'^\d*$', gid))
+        assert (re.match(r'^\d*$', gid))
         self._gid: str = gid
         self._recap = None
         self._box = None
         self._plays = None
         Page.__init__(self, GamePage.URL_TEMPLATE.format('game', self.gid))
-    
+
     def __repr__(self):
         return f'GamePage(gid={self._gid})'
-    
+
     def _get_url(self, category: Category = Category.PLAYS):
         dest = None
         match category:
@@ -97,11 +100,11 @@ class GamePage(Page):
         if dest is not None:
             return GamePage.URL_TEMPLATE.format(dest, self.gid)
         return None
-    
+
     @property
     def gid(self):
         return self._gid
-    
+
     @property
     def recap(self):
         if self._recap is None:
