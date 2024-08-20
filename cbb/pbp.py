@@ -1,8 +1,10 @@
-import time
+import asyncio
 import re
 import logging
 import json
+import aiohttp
 from datetime import datetime
+from bs4 import BeautifulSoup
 from .database import with_cursor
 from .webscraper import Page, GamePage
 
@@ -47,9 +49,8 @@ ABBREV_POS = (
 TODO_ERROR = 91202
 
 
-def get_game_tids(gid: str | int):
+def get_game_tids(gid: int):
     """Retrieves the tid's for the away[0] and home[1] teams from the given game"""
-    gid = str(gid)
     url = f'{ESPN_HOME}/playbyplay/_/gameId/{gid}'
     page = Page(url)
     selector = page.soup.select('div[class="Gamestrip__TeamContainer flex items-center"]')
@@ -66,7 +67,7 @@ def get_game_tids(gid: str | int):
 
 
 @with_cursor
-def fetch_cid_from_tid(cursor, tid: str | int):
+def fetch_cid_from_tid(cursor, tid: int):
     """Fetches cid from team id"""
     # this function assumes that the team is new and does not yet store its own `cid`
     tp_url = f'{ESPN_HOME}/team/_/id/{tid}'
@@ -91,9 +92,8 @@ def fetch_cid_from_tid(cursor, tid: str | int):
 
 
 @with_cursor
-def fetch_team_data(cursor, tid: str | int):
+def fetch_team_data(cursor, tid: int):
     """Fetches team data and populates the database if it does not already exist"""
-    tid = str(tid)
     res = cursor.execute('SELECT * FROM Teams WHERE tid=:tid LIMIT 1',
                          {'tid': tid}).fetchone()  # `tid` should be unique within the database
 
@@ -120,10 +120,7 @@ def fetch_team_data(cursor, tid: str | int):
 
 
 @with_cursor
-def fetch_rid(cursor, tid: str | int, season: str | int):
-    tid = str(tid)
-    season = str(season)
-
+def fetch_rid(cursor, tid: int, season: int):
     res = cursor.execute('SELECT rid FROM Rosters WHERE tid=":tid" AND season=:season LIMIT 1',
                          {'tid': tid, 'season': season}).fetchone()
 
@@ -143,48 +140,11 @@ def _get_abb(table, value):
             return abb
 
 
-def fetch_plyr_data(pid: str | int):
-    """Fetches player data from ESPN."""
-    pid = str(pid)
-
-    url = f'{ESPN_HOME}/player/_/id/{pid}'
-    pl = Page(url)
-    hdr_s = pl.soup.select(
-        'div[class="PlayerHeader__Left flex items-center justify-start overflow-hidden brdr-clr-gray-09"]')
-    hdr, = (g for g in hdr_s)
-
-    fname, lname = (nm.text.replace('.', '') for nm in
-                    hdr.select('h1[class="PlayerHeader__Name flex flex-column ttu fw-bold pr4 h2"] span'))
-    pos_long = hdr.select(
-        'ul[class="PlayerHeader__Team_Info list flex pt1 pr4 min-w-0 flex-basis-0 flex-shrink flex-grow nowrap"] li')[
-        -1].text
-    pos = _get_abb(ABBREV_POS, pos_long)
-
-    bio = hdr.select('ul[class="PlayerHeader__Bio_List flex flex-column list clr-gray-04"] li')
-    htft, htin, wt = None, None, None
-    try:
-        htwt_str, = (li.text for li in bio if li.text.startswith('HT/WT'))
-        htft, htin, wt = re.match(r'HT/WT(\d+)\' (\d+)", (\d+) lbs', htwt_str).groups()
-    except ValueError as e:
-        logging.debug(f'Missing ht/wt for {pid=} (error: {e})')
-
-    return {
-        'pid': pid,
-        'fname': fname,
-        'lname': lname,
-        'pos': pos,
-        'htft': htft,
-        'htin': htin,
-        'wt': wt
-    }
-
-
 @with_cursor
-def parse_pbp(cursor, gid: str | int):
+def parse_pbp(cursor, gid: int):
     """
     Parses plays from a given game and inserts them into the database, along with any other missing game data.
     """
-    gid = str(gid)
     # TODO: if we can assume that a game can only be inserted by a call to parse_pbp, we can exit here
     # cursor.execute('SELECT gid FROM Games WHERE gid=:gid', {'gid': gid})
     # if cursor.fetchone():
@@ -224,12 +184,11 @@ def parse_pbp(cursor, gid: str | int):
                        'date': date
                    })
 
-    # a_tid, h_tid = get_game_tids(gid)
     res = get_game_tids(gid)
     if res == TODO_ERROR:
-        return None 
+        return None
     a_tid, h_tid = res
-    
+
     team_data = {
         'home': {**fetch_team_data(h_tid), **{'rid': fetch_rid(h_tid, season)}},
         'away': {**fetch_team_data(a_tid), **{'rid': fetch_rid(a_tid, season)}}
@@ -239,50 +198,94 @@ def parse_pbp(cursor, gid: str | int):
     # TODO: while almost all box score participants also appear in the play-by-play,
     #       it is possible for players to be parsed here without ever appearing in
     #       Plays, making it impossible to reliably determine whether a player played
-    #       in a game and how many they've played in
+    #       in a game and how many they've played in only from play-by-play
     bs = gp.boxscore
-    bs_tab_s = bs.soup.select('tbody[class="Table__TBODY"]')
-    bs_plyr_s = []
-    for tab in bs_tab_s:
-        bs_ath_s = tab.select('a[class="AnchorLink truncate db Boxscore__AthleteName"]')
-        if bs_ath_s:
-            bs_plyr_s.append(bs_ath_s)
-    a_plyr_s, h_plyr_s = bs_plyr_s
+    team_dumps_raw = []
+    for tab in bs.soup.select('tbody[class="Table__TBODY"]'):
+        box_dumps = tab.select('a[class="AnchorLink truncate db Boxscore__AthleteName"]')
+        if box_dumps:
+            team_dumps_raw.append(box_dumps)
+    team_dumps = {
+        'away': team_dumps_raw[0],
+        'home': team_dumps_raw[1]
+    }
 
-    players = {  # map player names to pid
-        a_tid: dict(),
-        h_tid: dict()
+    async def _fetch(session, url):
+        async with session.get(url) as resp:
+            return str(await resp.read())
+
+    async def _get_player_pages(dumps):
+        pids = [re.search(r'.*:(\d+)', dump['data-player-uid'])[1] for dump in dumps]
+        urls = [f'{ESPN_HOME}/player/_/id/{pid}' for pid in pids]
+        async with aiohttp.ClientSession() as session:
+            tasks = [asyncio.create_task(_fetch(session, url)) for url in urls]
+            htmls = await asyncio.gather(*tasks)
+            return htmls
+
+    async def _get_all_plyr_pages(team_dumps):
+        plyr_htmls = dict()
+        plyr_htmls['away'] = await _get_player_pages(team_dumps['away'])
+        plyr_htmls['home'] = await _get_player_pages(team_dumps['home'])
+        return plyr_htmls
+
+    # asynchronously grab the player pages -- each page ~400KB * ~22 players = 8.8 MB in memory
+    plyr_htmls = asyncio.run(_get_all_plyr_pages(team_dumps))
+
+    # process acquired player data
+    players = {
+        team_data['away']['tid']: dict(),
+        team_data['home']['tid']: dict()
     }
     plyr_d_add = []
     plyrseason_d_add = []
+    for ha, team_htmls in plyr_htmls.items():
+        tid = team_data[ha]['tid']
+        for html in team_htmls:
+            bs = BeautifulSoup(str(html), 'html.parser')
+            url = bs.select('meta[property="og:url"]')[0]['content']
+            pid = re.search(r'\d+', url)[0]
 
-    for data in team_data.values():
-        tid = str(data['tid'])
-        rid = data['rid']
-        plyr_s = a_plyr_s if tid == a_tid else h_plyr_s
-        for r in plyr_s:
-            pid = re.search(r'.*:(\d+)', r['data-player-uid'])[1]
+            res = cursor.execute('SELECT fname, lname FROM Players WHERE pid=:pid', {'pid': pid}).fetchone()
+            if res is None:
+                # m2 contains player info (hardcoded with ending for now)
+                m2 = re.search(r'"plyrHdr":\{"ath":(\{.*\}),"statsBlck".*\}', html)
+                j2 = json.loads(m2[1].replace('\\\\', '\\').replace('\\\'', '\''))
+                fname = j2['fNm']
+                lname = j2['lNm']
+                pos = j2.get('posAbv', None)  # TODO: may need to test this for possible multiple position listing
+                htft, htin, wt = None, None, None
+                htwt_raw = j2.get('htwt', None)
+                if htwt_raw is not None:
+                    htft, htin, wt = re.search(r'''(\d+)' (\d+)", (\d+) lbs''', htwt_raw).groups()
+                # brthpl = j2.get('brthpl', None)
 
-            plyr_d = cursor.execute('SELECT fname, lname FROM Players WHERE pid=:pid LIMIT 1', {'pid': pid}).fetchone()
-            if plyr_d is None:
-                plyr_d = fetch_plyr_data(pid)
-                plyr_d_add.append(plyr_d)
+                res = {
+                    'pid': pid,
+                    'fname': fname,
+                    'lname': lname,
+                    'pos': pos,
+                    'htft': htft,
+                    'htin': htin,
+                    'wt': wt,
+                }
 
-            plyrseason_d = cursor.execute('SELECT rid FROM PlayerSeasons WHERE pid=:pid AND rid=:rid LIMIT 1',
-                                          {'pid': pid, 'rid': rid}).fetchone()
-            if plyrseason_d is None:
-                plyrseason_d = {'pid': pid, 'rid': rid}
-                plyrseason_d_add.append(plyrseason_d)
+                ha = 'away' if tid == team_data['away'] else 'home'
 
-            plyr_name = f'{plyr_d["fname"]} {plyr_d["lname"]}'
-            players[tid][plyr_name] = pid
+                plyr_d_add.append(res)
+                plyrseason_d_add.append({'pid': pid, 'rid': team_data[ha]['rid']})
 
-        # insert missing Players and PlayerSeasons to appropriate tables
-        cursor.executemany(
-            'INSERT OR IGNORE INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
-            plyr_d_add)
-        cursor.executemany('INSERT OR IGNORE INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)',
-                           plyrseason_d_add)
+            plyr_name = f'{res["fname"]} {res["lname"]}'
+            try:
+                players[tid][plyr_name] = pid
+            except KeyError:
+                print(players.keys())
+
+    # insert missing Players and PlayerSeasons to appropriate tables
+    cursor.executemany(
+        'INSERT OR IGNORE INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
+        plyr_d_add)
+    cursor.executemany('INSERT OR IGNORE INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)',
+                       plyrseason_d_add)
 
     # pbp convenience functions
     def is_team_name(s: str):
@@ -294,7 +297,7 @@ def parse_pbp(cursor, gid: str | int):
         #       only since that is more likely to be accurate
         if key in d:
             return d[key]
-        # logging.warning(f'Couldn\'t find {key=} in dict={d}')  
+        # logging.warning(f'Couldn\'t find {key=} in dict={d}')
 
     def _get_pts_scored(away_score, home_score, last_play):
         try:
@@ -325,10 +328,11 @@ def parse_pbp(cursor, gid: str | int):
             period = play['period']['number']
             away_score = play['awayScore']
             home_score = play['homeScore']
-            if 'homeAway' in play:
-                data = team_data[play['homeAway']]
-                tid = str(data['tid'])
-                # rid = str(data['rid'])
+            ha = play.get('homeAway', None)
+            if ha is not None:
+                data = team_data[ha]
+                tid = data['tid']
+                # rid = data['rid']
             if 'text' not in play:  # desc not provided
                 # check if play was scoring play
                 type_ = None
