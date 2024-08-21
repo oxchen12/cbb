@@ -75,7 +75,7 @@ def fetch_cid_from_tid(cursor, tid: int):
     # idk if this is the best way to do it but it should work every time
     conf_url = tp.soup.find('a', string='Full Standings')['href']
     cid = conf_url.split('/')[-1]
-    res = cursor.execute('SELECT cid FROM Conferences WHERE cid=":cid"', {'cid': cid}).fetchone()
+    res = cursor.execute('SELECT cid FROM Conferences WHERE cid=":cid LIMIT 1"', {'cid': cid}).fetchone()
 
     if res is None:
         conf = Page(conf_url)
@@ -85,7 +85,7 @@ def fetch_cid_from_tid(cursor, tid: int):
         s2 = conf.soup.select('div[class="Table__Title"]')
         name = s2[0].text
 
-        cursor.execute('INSERT OR IGNORE INTO Conferences (cid, name, abbrev) VALUES (:cid, :name, :abbrev)',
+        cursor.execute('INSERT INTO Conferences (cid, name, abbrev) VALUES (:cid, :name, :abbrev)',
                        {'cid': cid, 'name': name, 'abbrev': abbrev})
 
     return cid
@@ -94,8 +94,8 @@ def fetch_cid_from_tid(cursor, tid: int):
 @with_cursor
 def fetch_team_data(cursor, tid: int):
     """Fetches team data and populates the database if it does not already exist"""
-    res = cursor.execute('SELECT * FROM Teams WHERE tid=:tid LIMIT 1',
-                         {'tid': tid}).fetchone()  # `tid` should be unique within the database
+    res = cursor.execute('SELECT tid FROM Teams WHERE tid=:tid LIMIT 1',
+                         {'tid': tid}).fetchone()
 
     if res is None:
         cid = fetch_cid_from_tid(tid)
@@ -114,7 +114,7 @@ def fetch_team_data(cursor, tid: int):
         }
 
         # create new record for team
-        cursor.execute('INSERT OR IGNORE INTO Teams (tid, cid, name, mascot) VALUES (:tid, :cid, :name, :mascot)', res)
+        cursor.execute('INSERT INTO Teams (tid, cid, name, mascot) VALUES (:tid, :cid, :name, :mascot)', res)
 
     return dict(res)
 
@@ -146,7 +146,7 @@ def parse_pbp(cursor, gid: int):
     Parses plays from a given game and inserts them into the database, along with any other missing game data.
     """
     # TODO: if we can assume that a game can only be inserted by a call to parse_pbp, we can exit here
-    # cursor.execute('SELECT gid FROM Games WHERE gid=:gid', {'gid': gid})
+    # cursor.execute('SELECT gid FROM Games WHERE gid=:gid LIMIT 1', {'gid': gid})
     # if cursor.fetchone():
     #     return
 
@@ -173,7 +173,7 @@ def parse_pbp(cursor, gid: int):
         else:
             away = tm['id']
 
-    cursor.execute('''INSERT OR IGNORE INTO Games (gid, neutral, home, away, season, date) 
+    cursor.execute('''INSERT INTO Games (gid, neutral, home, away, season, date) 
                       VALUES (:gid, :neutral, :home, :away, :season, :date)''',
                    {
                        'gid': gid,
@@ -214,7 +214,7 @@ def parse_pbp(cursor, gid: int):
         async with session.get(url) as resp:
             return str(await resp.read())
 
-    async def _get_player_pages(dumps):
+    async def _get_plyr_pages(dumps):
         pids = [re.search(r'.*:(\d+)', dump['data-player-uid'])[1] for dump in dumps]
         urls = [f'{ESPN_HOME}/player/_/id/{pid}' for pid in pids]
         async with aiohttp.ClientSession() as session:
@@ -224,8 +224,8 @@ def parse_pbp(cursor, gid: int):
 
     async def _get_all_plyr_pages(team_dumps):
         plyr_htmls = dict()
-        plyr_htmls['away'] = await _get_player_pages(team_dumps['away'])
-        plyr_htmls['home'] = await _get_player_pages(team_dumps['home'])
+        plyr_htmls['away'] = await _get_plyr_pages(team_dumps['away'])
+        plyr_htmls['home'] = await _get_plyr_pages(team_dumps['home'])
         return plyr_htmls
 
     # asynchronously grab the player pages -- each page ~400KB * ~22 players = 8.8 MB in memory
@@ -252,7 +252,7 @@ def parse_pbp(cursor, gid: int):
                 j2 = json.loads(m2[1].replace('\\\\', '\\').replace('\\\'', '\''))
                 fname = j2['fNm']
                 lname = j2['lNm']
-                pos = j2.get('posAbv', None)  # TODO: may need to test this for possible multiple position listing
+                pos = j2.get('posAbv', None)[-1]  # TODO: may need to test this for possible multiple position listing
                 htft, htin, wt = None, None, None
                 htwt_raw = j2.get('htwt', None)
                 if htwt_raw is not None:
@@ -282,9 +282,9 @@ def parse_pbp(cursor, gid: int):
 
     # insert missing Players and PlayerSeasons to appropriate tables
     cursor.executemany(
-        'INSERT OR IGNORE INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
+        'INSERT INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
         plyr_d_add)
-    cursor.executemany('INSERT OR IGNORE INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)',
+    cursor.executemany('INSERT INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)',
                        plyrseason_d_add)
 
     # pbp convenience functions
@@ -323,7 +323,10 @@ def parse_pbp(cursor, gid: int):
             tid = None
 
             # these fields are provided directly
-            plyid = play['id'].removeprefix(str(gid))
+            plyid = int(play['id'].removeprefix(str(gid)))
+            cursor.execute('SELECT plyid FROM Plays WHERE plyid=:plyid AND gid=:gid', {'plyid': plyid, 'gid': gid})
+            if cursor.fetchone():
+                continue
             time_min, time_sec = play['clock']['displayValue'].split(':')
             period = play['period']['number']
             away_score = play['awayScore']
@@ -407,7 +410,7 @@ def parse_pbp(cursor, gid: int):
                           'subtype': subtype, 'away_score': away_score,
                           'home_score': home_score, 'pts_scored': pts_scored,
                           'desc': desc, 'plyr': plyr, 'plyr_ast': plyr_ast})
-    cursor.executemany('''INSERT OR IGNORE INTO Plays (plyid, gid, tid, period, time_min, time_sec, type, 
+    cursor.executemany('''INSERT INTO Plays (plyid, gid, tid, period, time_min, time_sec, type, 
                              subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast)
                           VALUES (:plyid, :gid, :tid, :period, :time_min, :time_sec, :type, 
                              :subtype, :away_score, :home_score, :pts_scored, :desc, :plyr, :plyr_ast)''',
