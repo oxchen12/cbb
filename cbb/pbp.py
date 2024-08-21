@@ -121,7 +121,7 @@ def fetch_team_data(cursor, tid: int):
 
 @with_cursor
 def fetch_rid(cursor, tid: int, season: int):
-    res = cursor.execute('SELECT rid FROM Rosters WHERE tid=":tid" AND season=:season LIMIT 1',
+    res = cursor.execute('SELECT rid FROM Rosters WHERE tid=:tid AND season=:season LIMIT 1',
                          {'tid': tid, 'season': season}).fetchone()
 
     if res is None:
@@ -190,8 +190,8 @@ def parse_pbp(cursor, gid: int):
     a_tid, h_tid = res
 
     team_data = {
-        'home': {**fetch_team_data(h_tid), **{'rid': fetch_rid(h_tid, season)}},
-        'away': {**fetch_team_data(a_tid), **{'rid': fetch_rid(a_tid, season)}}
+        'away': {**fetch_team_data(a_tid), **{'rid': fetch_rid(a_tid, season)}},
+        'home': {**fetch_team_data(h_tid), **{'rid': fetch_rid(h_tid, season)}}
     }
 
     # insert all players from box score if it exists
@@ -268,8 +268,6 @@ def parse_pbp(cursor, gid: int):
                     'htin': htin,
                     'wt': wt,
                 }
-
-                ha = 'away' if tid == team_data['away'] else 'home'
 
                 plyr_d_add.append(res)
                 plyrseason_d_add.append({'pid': pid, 'rid': team_data[ha]['rid']})
