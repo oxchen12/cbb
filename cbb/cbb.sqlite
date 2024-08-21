@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS Teams
 (
-    tid    INTEGER PRIMARY KEY NOT NULL UNIQUE,
+    tid    INTEGER PRIMARY KEY NOT NULL UNIQUE ON CONFLICT IGNORE,
     cid    INTEGER,
     name   TEXT                NOT NULL,
     mascot TEXT                NOT NULL,
@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS Teams
 );
 CREATE TABLE IF NOT EXISTS Games
 (
-    gid     INTEGER PRIMARY KEY NOT NULL UNIQUE,
+    gid     INTEGER PRIMARY KEY NOT NULL UNIQUE ON CONFLICT IGNORE,
     neutral INTEGER             NOT NULL DEFAULT 0,
     home    INTEGER             NOT NULL,
     away    INTEGER             NOT NULL,
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS Games
 );
 CREATE TABLE IF NOT EXISTS Players
 (
-    pid   INTEGER PRIMARY KEY NOT NULL UNIQUE,
+    pid   INTEGER PRIMARY KEY NOT NULL UNIQUE ON CONFLICT IGNORE,
     fname TEXT                NOT NULL,
     lname TEXT                NOT NULL,
     pos   VARCHAR(1),
@@ -49,11 +49,11 @@ CREATE TABLE IF NOT EXISTS Plays
     FOREIGN KEY (tid) REFERENCES Teams (tid),
     FOREIGN KEY (plyr) REFERENCES Players (pid),
     FOREIGN KEY (plyr_ast) REFERENCES Players (pid),
-    PRIMARY KEY (plyid, gid)
+    PRIMARY KEY (plyid, gid) ON CONFLICT IGNORE
 );
 CREATE TABLE IF NOT EXISTS Conferences
 (
-    cid    INTEGER PRIMARY KEY NOT NULL UNIQUE,
+    cid    INTEGER PRIMARY KEY NOT NULL UNIQUE ON CONFLICT IGNORE,
     name   TEXT                NOT NULL UNIQUE,
     abbrev TEXT                NOT NULL
 );
@@ -71,5 +71,5 @@ CREATE TABLE IF NOT EXISTS PlayerSeasons
     rid INTEGER NOT NULL,
     FOREIGN KEY (pid) REFERENCES Players (pid),
     FOREIGN KEY (rid) REFERENCES Rosters (rid),
-    PRIMARY KEY (pid, rid)
+    PRIMARY KEY (pid, rid) ON CONFLICT IGNORE
 );
