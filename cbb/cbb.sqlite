@@ -42,9 +42,10 @@ CREATE TABLE IF NOT EXISTS Plays
     away_score INTEGER    NOT NULL,
     home_score INTEGER    NOT NULL,
     pts_scored INTEGER,
-    desc       TEXT,
+    desc       TEXT,                                                      -- eventually, we should be able to reconstruct this without explicitly storing it
     plyr       INTEGER,
     plyr_ast   INTEGER,
+    rel_ply    INTEGER REFERENCES Plays (plyid) CHECK (plyid != rel_ply), -- rel_ply describes a related play for REBs/BLKs to SHTs and STLs to TOVs
     FOREIGN KEY (gid) REFERENCES Games (gid),
     FOREIGN KEY (tid) REFERENCES Teams (tid),
     FOREIGN KEY (plyr) REFERENCES Players (pid),
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS Conferences
 (
     cid    INTEGER PRIMARY KEY NOT NULL UNIQUE,
     name   TEXT                NOT NULL UNIQUE,
-    abbrev TEXT                NOT NULL
+    abbrev TEXT                NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS Rosters
 (
