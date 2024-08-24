@@ -1,4 +1,5 @@
-import asyncio
+"""webscraper.py: Module with utility classes for webscraping."""
+
 import re
 import logging
 import urllib.request
@@ -7,7 +8,7 @@ import time
 from http.client import HTTPResponse
 from bs4 import BeautifulSoup
 from enum import Enum, auto
-from typing import Iterable, Union
+from typing import Union
 
 MAX_HTTP_TRIES = 10
 

@@ -1,3 +1,5 @@
+"""schedule.py: Module for fetching schedule data for teams."""
+
 import re
 import logging
 from typing import Union
