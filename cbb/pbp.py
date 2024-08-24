@@ -1,12 +1,18 @@
+"""pbp.py: Module for parsing play-by-play data by webscraping ESPN pages."""
+
 import asyncio
 import re
 import logging
 import json
+import sqlite3
 import aiohttp
-from datetime import datetime
+import async_retrying
 from bs4 import BeautifulSoup
+from datetime import datetime
 from .database import with_cursor
 from .webscraper import Page, GamePage
+
+logging.basicConfig(filename='pbp.log', format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
 
 ESPN_HOME = 'https://www.espn.com/mens-college-basketball'
 RE_PLAY_TYPES = (
@@ -49,7 +55,7 @@ ABBREV_POS = (
 TODO_ERROR = 91202
 
 
-def get_game_tids(gid: int):
+def get_game_tids(gid: int) -> list[int] | int:
     """Retrieves the tid's for the away[0] and home[1] teams from the given game"""
     url = f'{ESPN_HOME}/playbyplay/_/gameId/{gid}'
     page = Page(url)
@@ -67,15 +73,15 @@ def get_game_tids(gid: int):
 
 
 @with_cursor
-def fetch_cid_from_tid(cursor, tid: int):
+def fetch_cid_from_tid(cursor: sqlite3.Cursor, tid: int) -> int:
     """Fetches cid from team id"""
     # this function assumes that the team is new and does not yet store its own `cid`
     tp_url = f'{ESPN_HOME}/team/_/id/{tid}'
     tp = Page(tp_url)
     # idk if this is the best way to do it but it should work every time
     conf_url = tp.soup.find('a', string='Full Standings')['href']
-    cid = conf_url.split('/')[-1]
-    res = cursor.execute('SELECT cid FROM Conferences WHERE cid=":cid LIMIT 1"', {'cid': cid}).fetchone()
+    cid = int(conf_url.split('/')[-1])
+    res = cursor.execute('SELECT cid FROM Conferences WHERE cid=:cid LIMIT 1', {'cid': cid}).fetchone()
 
     if res is None:
         conf = Page(conf_url)
@@ -85,16 +91,17 @@ def fetch_cid_from_tid(cursor, tid: int):
         s2 = conf.soup.select('div[class="Table__Title"]')
         name = s2[0].text
 
-        cursor.execute('INSERT INTO Conferences (cid, name, abbrev) VALUES (:cid, :name, :abbrev)',
-                       {'cid': cid, 'name': name, 'abbrev': abbrev})
+        cursor.execute(
+            'INSERT INTO Conferences (cid, name, abbrev) VALUES (:cid, :name, :abbrev) ON CONFLICT DO NOTHING',
+            {'cid': cid, 'name': name, 'abbrev': abbrev})
 
     return cid
 
 
 @with_cursor
-def fetch_team_data(cursor, tid: int):
+def fetch_team_data(cursor: sqlite3.Cursor, tid: int) -> dict:
     """Fetches team data and populates the database if it does not already exist"""
-    res = cursor.execute('SELECT tid FROM Teams WHERE tid=:tid LIMIT 1',
+    res = cursor.execute('SELECT * FROM Teams WHERE tid=:tid LIMIT 1',
                          {'tid': tid}).fetchone()
 
     if res is None:
@@ -114,19 +121,22 @@ def fetch_team_data(cursor, tid: int):
         }
 
         # create new record for team
-        cursor.execute('INSERT INTO Teams (tid, cid, name, mascot) VALUES (:tid, :cid, :name, :mascot)', res)
+        cursor.execute(
+            'INSERT INTO Teams (tid, cid, name, mascot) VALUES (:tid, :cid, :name, :mascot) ON CONFLICT DO NOTHING',
+            res)
 
     return dict(res)
 
 
 @with_cursor
-def fetch_rid(cursor, tid: int, season: int):
+def fetch_rid(cursor: sqlite3.Cursor, tid: int, season: int) -> int:
     res = cursor.execute('SELECT rid FROM Rosters WHERE tid=:tid AND season=:season LIMIT 1',
                          {'tid': tid, 'season': season}).fetchone()
 
     if res is None:
         # roster does not exist
-        cursor.execute('INSERT INTO Rosters (tid, season) VALUES (:tid, :season)', {'tid': tid, 'season': season})
+        cursor.execute('INSERT INTO Rosters (tid, season) VALUES (:tid, :season) ON CONFLICT DO NOTHING',
+                       {'tid': tid, 'season': season})
         res = cursor.execute('SELECT rid FROM Rosters WHERE tid=:tid AND season=:season LIMIT 1',
                              {'tid': tid, 'season': season}).fetchone()
 
@@ -134,7 +144,7 @@ def fetch_rid(cursor, tid: int, season: int):
     return rid
 
 
-def _get_abb(table, value):
+def _get_abb(table, value) -> str | None:
     for abb, l in table:
         if value == l:
             return abb
@@ -174,7 +184,7 @@ def parse_pbp(cursor, gid: int):
             away = tm['id']
 
     cursor.execute('''INSERT INTO Games (gid, neutral, home, away, season, date) 
-                      VALUES (:gid, :neutral, :home, :away, :season, :date)''',
+                      VALUES (:gid, :neutral, :home, :away, :season, :date) ON CONFLICT DO NOTHING''',
                    {
                        'gid': gid,
                        'neutral': neutral,
@@ -210,11 +220,13 @@ def parse_pbp(cursor, gid: int):
         'home': team_dumps_raw[1]
     }
 
-    async def _fetch(session, url):
+    @async_retrying.retry
+    async def _fetch(session: aiohttp.ClientSession, url: str):
         async with session.get(url) as resp:
-            return str(await resp.read())
+            logging.info(f'Reading text from {url}, response code {resp.status}')
+            return str(await resp.text())
 
-    async def _get_plyr_pages(dumps):
+    async def _get_plyr_pages(dumps) -> tuple[bytes]:
         pids = [re.search(r'.*:(\d+)', dump['data-player-uid'])[1] for dump in dumps]
         urls = [f'{ESPN_HOME}/player/_/id/{pid}' for pid in pids]
         async with aiohttp.ClientSession() as session:
@@ -222,7 +234,7 @@ def parse_pbp(cursor, gid: int):
             htmls = await asyncio.gather(*tasks)
             return htmls
 
-    async def _get_all_plyr_pages(team_dumps):
+    async def _get_all_plyr_pages(team_dumps) -> dict[str, tuple[bytes]]:
         plyr_htmls = dict()
         plyr_htmls['away'] = await _get_plyr_pages(team_dumps['away'])
         plyr_htmls['home'] = await _get_plyr_pages(team_dumps['home'])
@@ -252,7 +264,9 @@ def parse_pbp(cursor, gid: int):
                 j2 = json.loads(m2[1].replace('\\\\', '\\').replace('\\\'', '\''))
                 fname = j2['fNm']
                 lname = j2['lNm']
-                pos = j2.get('posAbv', None)[-1]  # TODO: may need to test this for possible multiple position listing
+                pos = j2.get('posAbv', None)  # TODO: may need to test this for possible multiple position listing
+                if pos is not None:
+                    pos = pos[-1]  # remove any leading characters (e.g., SG, SF, PF)
                 htft, htin, wt = None, None, None
                 htwt_raw = j2.get('htwt', None)
                 if htwt_raw is not None:
@@ -280,24 +294,18 @@ def parse_pbp(cursor, gid: int):
 
     # insert missing Players and PlayerSeasons to appropriate tables
     cursor.executemany(
-        'INSERT INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt)',
+        'INSERT INTO Players (pid, fname, lname, pos, htft, htin, wt) VALUES (:pid, :fname, :lname, :pos, :htft, :htin, :wt) ON CONFLICT DO NOTHING',
         plyr_d_add)
-    cursor.executemany('INSERT INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid)',
+    cursor.executemany('INSERT INTO PlayerSeasons (pid, rid) VALUES (:pid, :rid) ON CONFLICT DO NOTHING',
                        plyrseason_d_add)
 
+    team_names = (team_data['home']['name'], team_data['away']['name'])
+
     # pbp convenience functions
-    def is_team_name(s: str):
-        return s == team_data['home']['name'] or s == team_data['away']['name']
+    def _is_team_name(s: str) -> bool:
+        return s in team_names
 
-    def _get_or_warn(d: dict, key):
-        # TODO: for player name typos, could option to search
-        #       manually O(n) through dict keys for last name
-        #       only since that is more likely to be accurate
-        if key in d:
-            return d[key]
-        # logging.warning(f'Couldn\'t find {key=} in dict={d}')
-
-    def _get_pts_scored(away_score, home_score, last_play):
+    def _get_pts_scored(away_score: int, home_score: int, last_play: dict) -> int:
         try:
             if last_play['away_score'] != away_score:
                 # away team scored
@@ -310,15 +318,18 @@ def parse_pbp(cursor, gid: int):
 
     # parse play-by-play
     plays = []
+    last = dict()  # cache for last play of a given type
     for pd in pbp_j:
         for play in pd:
-            # TODO: I could pull this section out to make it more readable
+            # TODO: I could pull this section out to make it more readable (but need to pass in more variables)
             # these fields are not always present
+            tid = None
+            type_ = None
             subtype = None
             pts_scored = None
             plyr = None
             plyr_ast = None
-            tid = None
+            rel_ply = None
 
             # these fields are provided directly
             plyid = int(play['id'].removeprefix(str(gid)))
@@ -334,82 +345,93 @@ def parse_pbp(cursor, gid: int):
                 data = team_data[ha]
                 tid = data['tid']
                 # rid = data['rid']
-            if 'text' not in play:  # desc not provided
+            desc = play.get('text', None)
+            if desc is None:  # desc not provided
                 # check if play was scoring play
-                type_ = None
                 if play['scoringPlay']:
                     # check who scored and how many points
                     type_ = 'SHT'
                     if plays:
                         pts_scored = _get_pts_scored(away_score, home_score, plays[-1])
-                plays.append({'plyid': plyid, 'gid': gid, 'tid': tid, 'period': period,
-                              'time_min': time_min, 'time_sec': time_sec, 'type': type_,
-                              'subtype': subtype, 'away_score': away_score,
-                              'home_score': home_score, 'pts_scored': pts_scored,
-                              'desc': None, 'plyr': plyr, 'plyr_ast': plyr_ast})
-                continue
-            desc = play['text']
+            else:
+                # remaining fields must be parsed from play description
+                for t, r in RE_PLAY_TYPES:
+                    m = re.search(r, desc)
+                    if m is not None:
+                        type_ = t
+                        break
 
-            # remaining fields must be parsed from play description
-            for t, r in RE_PLAY_TYPES:
-                m = re.search(r, desc)
-                if m is not None:
-                    type_ = t
-                    break
+                g = m.groups()
+                match type_:
+                    case 'SHT':
+                        plyr_name, sht_result, sht_sub, ast_name = g
+                        plyr_name = plyr_name.replace('.', '')  # always exclude periods from player names
+                        plyr = players[tid].get(plyr_name, None)  # get pid of shooter
+                        if sht_sub is not None:  # some missed shots do not have encoded subtype
+                            subtype = _get_abb(ABBREV_SHOT_SUBTYPES, sht_sub)  # encode subtype
 
-            g = m.groups()
-            match type_:
-                case 'SHT':
-                    plyr_name, sht_result, sht_sub, ast_name = g
-                    plyr_name = plyr_name.replace('.', '')  # always exclude periods from player names
-                    plyr = _get_or_warn(players[tid], plyr_name)  # get pid of shooter
-                    if sht_sub is not None:  # some missed shots do not have encoded subtype
-                        subtype = _get_abb(ABBREV_SHOT_SUBTYPES, sht_sub)  # encode subtype
+                        pts_scored = 0  # default 0 points
+                        if sht_result == 'made':
+                            if sht_sub is not None:
+                                pts_scored = int(subtype[0])  # if made, determine points from subtype
+                            else:
+                                pts_scored = _get_pts_scored(away_score, home_score, plays[-1])
+                                subtype = '3FG' if pts_scored == 3 else '2FG'
+                            if ast_name is not None:
+                                ast_name = ast_name.replace('.', '')
+                                plyr_ast = players[tid].get(ast_name)  # get pid of assister
 
-                    pts_scored = 0  # default 0 points
-                    if sht_result == 'made':
-                        if sht_sub is not None:
-                            pts_scored = int(subtype[0])  # if made, determine points from subtype
-                        else:
-                            pts_scored = _get_pts_scored(away_score, home_score, plays[-1])
-                            subtype = '3FG' if pts_scored == 3 else '2FG'
-                        if ast_name is not None:
-                            ast_name = ast_name.replace('.', '')
-                            plyr_ast = _get_or_warn(players[tid], ast_name)  # get pid of assister
+                        # link free throws to related play (last foul)
+                        if subtype == '1FT':
+                            rel_ply = last['FL']
 
-                case 'REB' | 'TOV':
-                    # can be attributed to team or individual
-                    plyr_name = g[0].replace('.', '')
-                    if not is_team_name(plyr_name):
-                        plyr = _get_or_warn(players[tid], plyr_name)
+                    case 'REB':
+                        # can be attributed to team or individual
+                        plyr_name = g[0].replace('.', '')
+                        if not _is_team_name(plyr_name):
+                            plyr = players[tid].get(plyr_name, None)
 
-                    # encode subtype
-                    if type_ == 'REB':
+                        # encode subtype
                         reb_sub = g[1]
                         subtype = _get_abb(ABBREV_REB_SUBTYPES, reb_sub)
 
-                case 'FL':
-                    tech, plyr_name = g
-                    if tech:
-                        subtype = 'TCH'
-                    plyr_name = plyr_name.replace('.', '')
-                    plyr = _get_or_warn(players[tid], plyr_name)
+                        # link to related play (last [missed?] shot)
+                        # note: blocks are only recorded when the shot is missed
+                        rel_ply = last['SHT']
 
-                case 'STL' | 'BLK':
-                    plyr_name = g[0].replace('.', '')
-                    plyr = _get_or_warn(players[tid], plyr_name)
+                    case 'TOV':
+                        plyr_name = g[0].replace('.', '')
+                        if not _is_team_name(plyr_name):
+                            plyr = players[tid].get(plyr_name, None)
 
-                case 'TO' | 'EOP' | 'INV':
-                    # TO: just encode TV timeouts as neutral timeouts
-                    pass
+                    case 'FL':
+                        tech, plyr_name = g
+                        if tech:
+                            subtype = 'TCH'
+                        plyr_name = plyr_name.replace('.', '')
+                        plyr = players[tid].get(plyr_name, None)
+
+                    case 'STL' | 'BLK':
+                        plyr_name = g[0].replace('.', '')
+                        plyr = players[tid].get(plyr_name, None)
+
+                        if type_ == 'STL':
+                            rel_ply = last['TOV']
+                        else:
+                            rel_ply = last['SHT']
+
+                    case 'TO' | 'EOP' | 'INV':
+                        # TO: just encode TV timeouts as neutral timeouts
+                        pass
+            last[type_] = plyid
 
             plays.append({'plyid': plyid, 'gid': gid, 'tid': tid, 'period': period,
                           'time_min': time_min, 'time_sec': time_sec, 'type': type_,
                           'subtype': subtype, 'away_score': away_score,
                           'home_score': home_score, 'pts_scored': pts_scored,
-                          'desc': desc, 'plyr': plyr, 'plyr_ast': plyr_ast})
+                          'desc': desc, 'plyr': plyr, 'plyr_ast': plyr_ast, 'rel_ply': rel_ply})
     cursor.executemany('''INSERT INTO Plays (plyid, gid, tid, period, time_min, time_sec, type, 
-                             subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast)
+                             subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast, rel_ply)
                           VALUES (:plyid, :gid, :tid, :period, :time_min, :time_sec, :type, 
-                             :subtype, :away_score, :home_score, :pts_scored, :desc, :plyr, :plyr_ast)''',
+                             :subtype, :away_score, :home_score, :pts_scored, :desc, :plyr, :plyr_ast, :rel_ply) ON CONFLICT DO NOTHING''',
                        plays)
