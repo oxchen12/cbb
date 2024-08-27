@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS Plays
     plyr       INTEGER,
     plyr_ast   INTEGER,
     rel_ply    INTEGER REFERENCES Plays (plyid) CHECK (plyid != rel_ply), -- rel_ply describes a related play for REBs/BLKs to SHTs and STLs to TOVs
+    x_coord    INTEGER,
+    y_coord    INTEGER,
     FOREIGN KEY (gid) REFERENCES Games (gid),
     FOREIGN KEY (tid) REFERENCES Teams (tid),
     FOREIGN KEY (plyr) REFERENCES Players (pid),
