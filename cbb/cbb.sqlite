@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS Games
 (
     gid     INTEGER PRIMARY KEY NOT NULL UNIQUE,
     neutral INTEGER             NOT NULL DEFAULT 0,
+    isconf  INTEGER, -- not yet confident that this is always known from ESPN data
     home    INTEGER             NOT NULL,
     away    INTEGER             NOT NULL,
     date    VARCHAR(10)         NOT NULL,
