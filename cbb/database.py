@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import logging
+import math
 from typing import Optional
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,7 +20,7 @@ def delete_db(force=False) -> bool:
     if not os.path.exists(DB_FILE):
         print('Database file does not exist.')
         return False
-    ans = 'y' if force else input('Are you sure you want to delete the existing database? [y/N]').lower()[0]
+    ans = 'y' if force else input('Are you sure you want to delete the existing database? [y/N]').lower().startswith('y')
     res = ans == 'y'
     if res:
         try:
@@ -55,6 +56,7 @@ def conn(path: str = DB_FILE):
     if _conn is None:
         _conn = sqlite3.connect(path)
         _conn.row_factory = sqlite3.Row  # dict-like results from SELECT statements
+        _conn.create_function('sqrt', 1, math.sqrt)
     try:
         yield _conn
     except Exception as e:
