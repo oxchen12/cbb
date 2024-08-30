@@ -68,7 +68,7 @@ def get_game_tids(gid: int) -> list[int] | int:
         #       -- this is part of a larger issue where we need to be able to handle data that simply
         #       -- does not exist on ESPN's website, e.g., DII teams and players
         logging.warning('At least one team id missing, skipping this game')
-        return TODO_ERROR
+        raise NotImplementedError
     return out
 
 
@@ -151,23 +151,33 @@ def _get_abb(table, value) -> str | None:
 
 
 @with_cursor
-def parse_pbp(cursor, gid: int):
+def parse_pbp(cursor, gid: int, assume_gid_from_pbp: bool = False) -> None:
     """
     Parses plays from a given game and inserts them into the database, along with any other missing game data.
     """
-    # TODO: if we can assume that a game can only be inserted by a call to parse_pbp, we can exit here
-    # cursor.execute('SELECT gid FROM Games WHERE gid=:gid LIMIT 1', {'gid': gid})
-    # if cursor.fetchone():
-    #     return
+    if assume_gid_from_pbp:
+        cursor.execute('SELECT gid FROM Games WHERE gid=:gid LIMIT 1', {'gid': gid})
+        if cursor.fetchone():
+            return
 
     # grab play-by-play data from game page
+    # TODO: this part can be awaited
     gp = GamePage(gid)
     pbp = gp.plays
     pbp_m = re.search(r'\"pbp\":\s*\{\"playGrps\":(.+\]\]),\"tms\".*\}', str(pbp.soup), flags=re.DOTALL)
     if not pbp_m:
         logging.warning(f'Play by play data is not available for {gid=}')
-        return None
+        return
     pbp_j = json.loads(pbp_m[1].replace('\\', ''))
+
+    # grab shot chart data from game page
+    shots_m = re.search(r'\"shtChrt\":\s*\{\"plays\":(\[.+\]),\s*\"tms\"', str(pbp.soup), flags=re.DOTALL)
+    shot_chart = dict()
+    if not shots_m:
+        logging.info(f'Shot chart data is not available for {gid=}')
+    else:
+        shots_j = json.loads(shots_m[1].replace('\\', ''))
+        shot_chart = {int(play['id'].removeprefix(str(gid))): play['coordinate'] for play in shots_j}
 
     # fetch game data
     # note: this data also stores whether a game is a conference game
@@ -177,27 +187,26 @@ def parse_pbp(cursor, gid: int):
     date = dt.strftime('%Y-%m-%d')
     season = dt.year + int(datetime(dt.year, 7, 1) < dt)  # add 1 to year if dt is in the fall semester
     neutral = 0 if 'neutralSite' not in gm_j else int(gm_j['neutralSite'])
+    isconf = 0 if 'isConferenceGame' not in gm_j else int(gm_j['isConferenceGame'])
     for tm in gm_j['tms']:
         if tm['isHome']:
             home = tm['id']
         else:
             away = tm['id']
 
-    cursor.execute('''INSERT INTO Games (gid, neutral, home, away, season, date) 
-                      VALUES (:gid, :neutral, :home, :away, :season, :date) ON CONFLICT DO NOTHING''',
+    cursor.execute('''INSERT INTO Games (gid, neutral, isconf, home, away, season, date) 
+                      VALUES (:gid, :neutral, :isconf, :home, :away, :season, :date) ON CONFLICT DO NOTHING''',
                    {
                        'gid': gid,
                        'neutral': neutral,
+                       'isconf': isconf,
                        'home': home,
                        'away': away,
                        'season': season,
                        'date': date
                    })
 
-    res = get_game_tids(gid)
-    if res == TODO_ERROR:
-        return None
-    a_tid, h_tid = res
+    a_tid, h_tid = get_game_tids(gid)
 
     team_data = {
         'away': {**fetch_team_data(a_tid), **{'rid': fetch_rid(a_tid, season)}},
@@ -209,6 +218,8 @@ def parse_pbp(cursor, gid: int):
     #       it is possible for players to be parsed here without ever appearing in
     #       Plays, making it impossible to reliably determine whether a player played
     #       in a game and how many they've played in only from play-by-play
+    #
+    #       Ideally, we should also grab their minutes played from here
     bs = gp.boxscore
     team_dumps_raw = []
     for tab in bs.soup.select('tbody[class="Table__TBODY"]'):
@@ -260,7 +271,7 @@ def parse_pbp(cursor, gid: int):
             res = cursor.execute('SELECT fname, lname FROM Players WHERE pid=:pid', {'pid': pid}).fetchone()
             if res is None:
                 # m2 contains player info (hardcoded with ending for now)
-                m2 = re.search(r'"plyrHdr":\{"ath":(\{.*\}),"statsBlck".*\}', html)
+                m2 = re.search(r'"plyrHdr":\{"ath":(\{.*\}),"statsBlck".*\}', str(html))
                 j2 = json.loads(m2[1].replace('\\\\', '\\').replace('\\\'', '\''))
                 fname = j2['fNm']
                 lname = j2['lNm']
@@ -330,6 +341,8 @@ def parse_pbp(cursor, gid: int):
             plyr = None
             plyr_ast = None
             rel_ply = None
+            x_coord = None
+            y_coord = None
 
             # these fields are provided directly
             plyid = int(play['id'].removeprefix(str(gid)))
@@ -345,6 +358,9 @@ def parse_pbp(cursor, gid: int):
                 data = team_data[ha]
                 tid = data['tid']
                 # rid = data['rid']
+            if plyid in shot_chart:
+                x_coord = shot_chart[plyid]['x']
+                y_coord = shot_chart[plyid]['y']
             desc = play.get('text', None)
             if desc is None:  # desc not provided
                 # check if play was scoring play
@@ -429,9 +445,12 @@ def parse_pbp(cursor, gid: int):
                           'time_min': time_min, 'time_sec': time_sec, 'type': type_,
                           'subtype': subtype, 'away_score': away_score,
                           'home_score': home_score, 'pts_scored': pts_scored,
-                          'desc': desc, 'plyr': plyr, 'plyr_ast': plyr_ast, 'rel_ply': rel_ply})
+                          'desc': desc, 'plyr': plyr, 'plyr_ast': plyr_ast, 'rel_ply': rel_ply,
+                          'x_coord': x_coord, 'y_coord': y_coord})
     cursor.executemany('''INSERT INTO Plays (plyid, gid, tid, period, time_min, time_sec, type, 
-                             subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast, rel_ply)
+                             subtype, away_score, home_score, pts_scored, desc, plyr, plyr_ast, 
+                             rel_ply, x_coord, y_coord)
                           VALUES (:plyid, :gid, :tid, :period, :time_min, :time_sec, :type, 
-                             :subtype, :away_score, :home_score, :pts_scored, :desc, :plyr, :plyr_ast, :rel_ply) ON CONFLICT DO NOTHING''',
+                             :subtype, :away_score, :home_score, :pts_scored, :desc, :plyr, :plyr_ast, 
+                             :rel_ply, :x_coord, :y_coord) ON CONFLICT DO NOTHING''',
                        plays)
