@@ -1,2 +1,4 @@
 # cbb
-Analysis and data visualization tools for college basketball stats.
+(WIP) Web scraping college basketball play-by-play data with SQLite database local storage.  
+
+Hoping to expand feature set to include advanced metrics calculators.
