@@ -59,11 +59,10 @@ def timeopmany(func, display=None, args_gen=None, level=0, extras=False):
     return {'overall': overall_dur, 'individual': durs}
 
 
-@database.with_cursor
-def view_tables(cursor, *tables):
+def view_tables(*tables):
     for t in tables:
         res = sql(f'SELECT * FROM {t}')
-        print(f'Results for fetching {t}: {res}')
+        print(f'Results for fetching {t}: {dict(res)}')
 
 
 @database.with_cursor
@@ -76,7 +75,7 @@ def sql(cursor, sql_exp: str, sql_params=None):
 
 def sqlp(sql_exp: str, sql_params=None):
     res = sql(sql_exp, sql_params)
-    if res is None:
+    if res is None or len(res) == 0:
         print('No results')
         return
     table = PrettyTable()
