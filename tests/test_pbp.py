@@ -173,6 +173,21 @@ def test_db_examples(*select) -> None:
         '''
         sqlp(s, {'tid': tid})
 
+    def ex12():
+        """List the top 10 players in rebounding their own shots."""
+        s = '''
+        SELECT P.fname || ' ' || P.lname as Name,
+               COUNT(L1.plyid) as `Own-Shot Rebounds`
+        FROM Plays L1 LEFT JOIN Players P ON P.pid = L1.plyr
+                     JOIN Plays L2 ON L1.rel_ply = L2.plyid 
+                                      AND L1.gid = L2.gid
+        WHERE L1.type = 'REB'
+              AND L2.plyr = L1.plyr
+        GROUP BY P.pid
+        ORDER BY `Own-Shot Rebounds` DESC
+        LIMIT 10'''
+        sqlp(s)
+
     tests = (
         ex1,
         ex2,
@@ -184,7 +199,8 @@ def test_db_examples(*select) -> None:
         ex8,
         ex9,
         ex10,
-        ex11
+        ex11,
+        ex12
     )
     if select:
         tests = (t for i, t in enumerate(tests) if i+1 in select)
