@@ -52,10 +52,7 @@ ABBREV_POS = (
     ('C', 'Center')
 )
 
-TODO_ERROR = 91202
-
-
-def get_game_tids(gid: int) -> list[int] | int:
+def get_game_tids(gid: int) -> list[int]:
     """Retrieves the tid's for the away[0] and home[1] teams from the given game"""
     url = f'{ESPN_HOME}/playbyplay/_/gameId/{gid}'
     page = Page(url)
@@ -64,17 +61,19 @@ def get_game_tids(gid: int) -> list[int] | int:
     out = [e[1] for e in out if e is not None]
     if len(out) < 2:
         # TODO: provide an alternative to encode with a new team id that doesn't collide with ESPN's
-        #       -- for now, we will just have a special case exit for parse_pbp
         #       -- this is part of a larger issue where we need to be able to handle data that simply
         #       -- does not exist on ESPN's website, e.g., DII teams and players
         logging.warning('At least one team id missing, skipping this game')
-        raise NotImplementedError
+        # raise NotImplementedError
+        return []
     return out
 
 
 @with_cursor
 def fetch_cid_from_tid(cursor: sqlite3.Cursor, tid: int) -> int:
     """Fetches cid from team id"""
+    # TODO: as teams can switch conferences, we should probably add a TeamSeasons table to register
+    #       teams in conferences by year
     # this function assumes that the team is new and does not yet store its own `cid`
     tp_url = f'{ESPN_HOME}/team/_/id/{tid}'
     tp = Page(tp_url)
@@ -162,6 +161,7 @@ def parse_pbp(cursor, gid: int, assume_gid_from_pbp: bool = False) -> None:
 
     # grab play-by-play data from game page
     # TODO: this part can be awaited
+    # TODO: all of my function calls that write to the DB can be made async
     gp = GamePage(gid)
     pbp = gp.plays
     pbp_m = re.search(r'\"pbp\":\s*\{\"playGrps\":(.+\]\]),\"tms\".*\}', str(pbp.soup), flags=re.DOTALL)
@@ -206,7 +206,11 @@ def parse_pbp(cursor, gid: int, assume_gid_from_pbp: bool = False) -> None:
                        'date': date
                    })
 
-    a_tid, h_tid = get_game_tids(gid)
+    tids = get_game_tids(gid)
+    if not tids:
+        logging.warning('One or more tids could not be found')
+        return
+    a_tid, h_tid = tids
 
     team_data = {
         'away': {**fetch_team_data(a_tid), **{'rid': fetch_rid(a_tid, season)}},
@@ -219,7 +223,8 @@ def parse_pbp(cursor, gid: int, assume_gid_from_pbp: bool = False) -> None:
     #       Plays, making it impossible to reliably determine whether a player played
     #       in a game and how many they've played in only from play-by-play
     #
-    #       Ideally, we should also grab their minutes played from here
+    #       Ideally, we should also grab their minutes played from here and probably
+    #       cache the box score data somewhere
     bs = gp.boxscore
     team_dumps_raw = []
     for tab in bs.soup.select('tbody[class="Table__TBODY"]'):
@@ -245,7 +250,7 @@ def parse_pbp(cursor, gid: int, assume_gid_from_pbp: bool = False) -> None:
             htmls = await asyncio.gather(*tasks)
             return htmls
 
-    async def _get_all_plyr_pages(team_dumps) -> dict[str, tuple[bytes]]:
+    async def _get_all_plyr_pages(team_dumps: dict[str, list[dict]]) -> dict[str, tuple[bytes]]:
         plyr_htmls = dict()
         plyr_htmls['away'] = await _get_plyr_pages(team_dumps['away'])
         plyr_htmls['home'] = await _get_plyr_pages(team_dumps['home'])
@@ -346,6 +351,7 @@ def parse_pbp(cursor, gid: int, assume_gid_from_pbp: bool = False) -> None:
 
             # these fields are provided directly
             plyid = int(play['id'].removeprefix(str(gid)))
+            # TODO: plyid = int(play['id'])
             cursor.execute('SELECT plyid FROM Plays WHERE plyid=:plyid AND gid=:gid', {'plyid': plyid, 'gid': gid})
             if cursor.fetchone():
                 continue
